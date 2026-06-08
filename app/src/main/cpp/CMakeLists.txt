@@ -27,6 +27,7 @@ project("sdrvideoscanner")
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         native-lib.cpp
+        source/analyzer/SpectrumAnalyzer.cpp
         source/file/FileSource.cpp)
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)

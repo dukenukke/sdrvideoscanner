@@ -6,8 +6,8 @@
 namespace sdr {
 namespace {
 
-constexpr std::size_t kValuesPerIqPair = 2;
-constexpr std::size_t kBytesPerIqPair = sizeof(std::int16_t) * kValuesPerIqPair;
+constexpr std::size_t kBytesPerIqPair =
+        sizeof(std::int16_t) * SampleBuffer::kValuesPerIqSample;
 
 std::int16_t decodeLittleEndianInt16(const std::uint8_t* bytes) {
     const auto value = static_cast<std::uint16_t>(
@@ -119,7 +119,7 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
     const auto samplesRead = static_cast<std::size_t>(bytesRead) / kBytesPerIqPair;
     buffer.resizeSamples(samplesRead);
 
-    const auto valueCount = samplesRead * kValuesPerIqPair;
+    const auto valueCount = samplesRead * SampleBuffer::kValuesPerIqSample;
     for (std::size_t index = 0; index < valueCount; ++index) {
         buffer.data()[index] = decodeLittleEndianInt16(&readBuffer_[index * sizeof(std::int16_t)]);
     }

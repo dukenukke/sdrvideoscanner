@@ -71,3 +71,14 @@ The architecture shall allow adding new sample sources without modifying the dec
 - SampleBuffer ownership must always be explicit.
 - Avoid unnecessary copying of IQ data.
 - Prefer move semantics and buffer reuse.
+
+## Scanner architecture
+
+- The project is a video signal scanner, not only a video decoder.
+- The core shall support scanning across multiple RF bands: 1.2 GHz, 3.3 GHz, 4.9 GHz, 5.8 GHz, and optionally 6.2/7.1 GHz through an external mixer/PLL.
+- Scanning logic must be separated from sample sources and from the video decoder.
+- The decoder must only run after a candidate video signature is detected.
+- Add a `ScanController` responsible for scan state, candidate detection, lock, skip, and resume.
+- Add a `BandPlan` module describing scan ranges, steps, dwell time, and per-band settings.
+- Add an `IRadioTuner` abstraction for direct Pluto tuning and future external mixer/PLL support.
+- The UI shall support Scan, Lock, Skip, Manual Tune, and Record IQ.

@@ -10,12 +10,22 @@
         android:id="@+id/diagnose_button"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Diagnose CS16 file"
+        android:text="Diagnose CS16 blocks"
+        app:layout_constraintBottom_toTopOf="@id/spectrum_button"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@id/sample_text"
         app:layout_constraintVertical_chainStyle="packed" />
+
+    <Button
+        android:id="@+id/spectrum_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Analyze spectrum"
+        app:layout_constraintBottom_toTopOf="@id/sample_text"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/diagnose_button" />
 
     <TextView
         android:id="@+id/sample_text"
@@ -28,7 +38,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/diagnose_button"
+        app:layout_constraintTop_toBottomOf="@id/spectrum_button"
         tools:text="CS16 diagnostics appear here" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
