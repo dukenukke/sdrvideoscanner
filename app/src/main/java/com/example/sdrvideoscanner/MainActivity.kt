@@ -2,8 +2,8 @@ package com.example.sdrvideoscanner
 
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
-import android.widget.TextView
 import com.example.sdrvideoscanner.databinding.ActivityMainBinding
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -15,15 +15,17 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Example of a call to a native method
-        binding.sampleText.text = stringFromJNI()
+        val defaultIqPath = File(getExternalFilesDir(null), "input.cs16").absolutePath
+        binding.sampleText.text = "Place input.cs16 at:\n$defaultIqPath"
+        binding.diagnoseButton.setOnClickListener {
+            binding.sampleText.text = diagnoseCs16File(defaultIqPath)
+        }
     }
 
     /**
-     * A native method that is implemented by the 'sdrvideoscanner' native library,
-     * which is packaged with this application.
+     * Opens a little-endian CS16 I/Q file and returns first-block diagnostics.
      */
-    external fun stringFromJNI(): String
+    external fun diagnoseCs16File(path: String): String
 
     companion object {
         // Used to load the 'sdrvideoscanner' library on application startup.

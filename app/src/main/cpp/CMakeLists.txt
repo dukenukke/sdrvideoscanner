@@ -26,7 +26,13 @@ project("sdrvideoscanner")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        native-lib.cpp)
+        native-lib.cpp
+        source/file/FileSource.cpp)
+
+target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
