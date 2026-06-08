@@ -1,4 +1,4 @@
-* text=auto
+* text=auto  eol=lf
 
 *.sh text eol=lf
 *.bash text eol=lf
@@ -24,7 +24,6 @@ CMakeLists.txt text eol=lf
 *.iq binary
 *.bin binary
 
-*.iq binary
 *.cs16 binary
 *.cf32 binary
 *.raw binary
