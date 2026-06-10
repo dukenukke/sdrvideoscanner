@@ -5,18 +5,31 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "source/IQMetadata.h"
 #include "source/analyzer/SpectrumAnalyzer.h"
 #include "source/file/FileSource.h"
+#include "source/video/AnalogVideoDecoder.h"
 
 namespace {
 
 constexpr std::size_t kDiagnosticBlockSamples = 4096;
 constexpr std::uint64_t kBytesPerIqSample = sizeof(std::int16_t) * 2;
 constexpr double kCs16FullScale = 32768.0;
+
+struct AnalogPlaybackSession {
+    std::unique_ptr<sdr::FileSource> source;
+    std::unique_ptr<sdr::AnalogVideoDecoder> decoder;
+    std::uint64_t sampleRateHz = 0;
+    sdr::VideoStandard standard = sdr::VideoStandard::NTSC_525_30FPS;
+    double playbackFrameRateHz = 0.0;
+    std::uint64_t frameIndex = 0;
+    std::uint64_t totalSampleCount = 0;
+};
 
 std::uint64_t fileSizeBytes(const std::string& path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -358,6 +371,282 @@ std::string diagnoseSpectrum(const std::string& filePath, const sdr::IQMetadata&
     return diagnostic.str();
 }
 
+void writeLittleEndianUint32(std::uint32_t value, std::vector<std::uint8_t>& output) {
+    output.push_back(static_cast<std::uint8_t>(value & 0xFFU));
+    output.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+    output.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xFFU));
+    output.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
+}
+
+std::string videoFrameDiagnostic(const sdr::VideoFrame& frame) {
+    std::ostringstream diagnostic;
+    diagnostic << "Analog FPV video frame decoded\n"
+               << "selected standard: " << optionalText(frame.selectedStandard) << "\n"
+               << "line_rate_hz: " << frame.lineRateHz << "\n"
+               << "samples_per_line: " << frame.samplesPerLine << "\n"
+               << "total_lines: " << frame.totalLines << "\n"
+               << "visible_lines: " << frame.visibleLines << "\n"
+               << "sync_locked: " << (frame.syncLocked ? "yes" : "no") << "\n"
+               << "detected_syncs: " << frame.detectedSyncCount << "\n"
+               << "detected_frame_sync_edges: " << frame.detectedFrameSyncCount << "\n"
+               << "sync_polarity: " << (frame.syncIsHigh ? "high" : "low") << "\n"
+               << "sync_threshold: " << static_cast<int>(frame.syncThreshold) << "\n"
+               << "sync_score: " << frame.syncScore << "\n"
+               << "line_stability_score: " << frame.lineStabilityScore << "\n"
+               << "frame: " << frame.width << "x" << frame.height << "\n"
+               << "decoder: " << frame.message;
+    return diagnostic.str();
+}
+
+jbyteArray frameToJByteArray(JNIEnv* env, const sdr::VideoFrame& frame) {
+    if (!frame.valid()) {
+        return env->NewByteArray(0);
+    }
+
+    const auto diagnostic = videoFrameDiagnostic(frame);
+    constexpr std::size_t kHeaderBytes = sizeof(std::uint32_t) * 3;
+    const auto packetSize = kHeaderBytes + frame.pixels.size() + diagnostic.size();
+    if (packetSize > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
+        return env->NewByteArray(0);
+    }
+
+    std::vector<std::uint8_t> packet;
+    packet.reserve(packetSize);
+    writeLittleEndianUint32(frame.width, packet);
+    writeLittleEndianUint32(frame.height, packet);
+    writeLittleEndianUint32(static_cast<std::uint32_t>(diagnostic.size()), packet);
+    packet.insert(packet.end(), frame.pixels.begin(), frame.pixels.end());
+    packet.insert(packet.end(), diagnostic.begin(), diagnostic.end());
+
+    auto* result = env->NewByteArray(static_cast<jsize>(packet.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
+
+    env->SetByteArrayRegion(
+            result,
+            0,
+            static_cast<jsize>(packet.size()),
+            reinterpret_cast<const jbyte*>(packet.data()));
+    return result;
+}
+
+double standardSelectionScore(const sdr::VideoFrame& frame) {
+    const double frameSyncScore = std::min(
+            1.0,
+            static_cast<double>(frame.detectedFrameSyncCount) / 2.0);
+    return (frame.lineStabilityScore * 0.50) +
+           (frame.syncScore * 0.35) +
+           (frameSyncScore * 0.15);
+}
+
+bool shouldSelectNtscForAuto(
+        const sdr::VideoFrame& palFrame,
+        const sdr::VideoFrame& ntscFrame) {
+    const double palScore = standardSelectionScore(palFrame);
+    const double ntscScore = standardSelectionScore(ntscFrame);
+    constexpr double kPalMustWinBy = 0.08;
+    return ntscScore + kPalMustWinBy >= palScore;
+}
+
+double playbackFrameRateForStandard(sdr::VideoStandard standard) {
+    switch (standard) {
+        case sdr::VideoStandard::NTSC_525_30FPS:
+            return 30.0;
+        case sdr::VideoStandard::PAL625_25FPS:
+            return 25.0;
+        case sdr::VideoStandard::AUTO:
+        default:
+            return 0.0;
+    }
+}
+
+sdr::VideoFrame decodeAnalogVideoFrameForStandard(
+        const std::string& filePath,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard standard,
+        std::uint64_t frameIndex) {
+    const auto sourceSampleRate =
+            sampleRateHz <=
+                            static_cast<std::uint64_t>(
+                                    std::numeric_limits<std::uint32_t>::max())
+                    ? static_cast<std::uint32_t>(sampleRateHz)
+                    : 0;
+
+    sdr::FileSource source(filePath, sourceSampleRate);
+    const auto openStatus = source.open();
+    if (!openStatus.ok()) {
+        sdr::VideoFrame frame;
+        frame.message = openStatus.message;
+        return frame;
+    }
+
+    sdr::AnalogVideoDecoderConfig config;
+    config.sampleRateHz = sampleRateHz;
+    config.timing = sdr::timingForStandard(standard);
+    if (frameIndex != 0) {
+        const auto startSample = static_cast<std::uint64_t>(
+                std::round((static_cast<double>(sampleRateHz) * static_cast<double>(frameIndex)) /
+                           config.timing.frameRateHz));
+        const auto seekStatus = source.seekSamples(startSample);
+        if (!seekStatus.ok()) {
+            sdr::VideoFrame frame;
+            frame.message = seekStatus.message;
+            source.close();
+            return frame;
+        }
+    }
+
+    sdr::AnalogVideoDecoder decoder(config);
+    auto frame = decoder.decodeOneFrame(source);
+    source.close();
+    return frame;
+}
+
+sdr::VideoFrame decodeAnalogVideoFrame(
+        const std::string& filePath,
+        bool hasSampleRateHz,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard requestedStandard,
+        std::uint64_t frameIndex) {
+    if (!hasSampleRateHz || sampleRateHz == 0) {
+        sdr::VideoFrame frame;
+        frame.message = "sample_rate_hz metadata is required";
+        return frame;
+    }
+
+    if (requestedStandard != sdr::VideoStandard::AUTO) {
+        return decodeAnalogVideoFrameForStandard(filePath, sampleRateHz, requestedStandard, frameIndex);
+    }
+
+    auto palFrame = decodeAnalogVideoFrameForStandard(
+            filePath,
+            sampleRateHz,
+            sdr::VideoStandard::PAL625_25FPS,
+            frameIndex);
+    auto ntscFrame = decodeAnalogVideoFrameForStandard(
+            filePath,
+            sampleRateHz,
+            sdr::VideoStandard::NTSC_525_30FPS,
+            frameIndex);
+
+    const bool chooseNtsc = shouldSelectNtscForAuto(palFrame, ntscFrame);
+    auto selectedFrame = chooseNtsc ? ntscFrame : palFrame;
+    std::ostringstream message;
+    message << selectedFrame.message
+            << "; AUTO compared PAL625_25FPS sync_score=" << palFrame.syncScore
+            << ", line_stability=" << palFrame.lineStabilityScore
+            << ", frame_sync_edges=" << palFrame.detectedFrameSyncCount
+            << ", standard_score=" << standardSelectionScore(palFrame)
+            << " vs NTSC_525_30FPS sync_score=" << ntscFrame.syncScore
+            << ", line_stability=" << ntscFrame.lineStabilityScore
+            << ", frame_sync_edges=" << ntscFrame.detectedFrameSyncCount
+            << ", standard_score=" << standardSelectionScore(ntscFrame);
+    selectedFrame.message = message.str();
+    return selectedFrame;
+}
+
+sdr::VideoStandard choosePlaybackStandard(
+        const std::string& filePath,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard requestedStandard) {
+    if (requestedStandard != sdr::VideoStandard::AUTO) {
+        return requestedStandard;
+    }
+
+    const auto palFrame = decodeAnalogVideoFrameForStandard(
+            filePath,
+            sampleRateHz,
+            sdr::VideoStandard::PAL625_25FPS,
+            0);
+    const auto ntscFrame = decodeAnalogVideoFrameForStandard(
+            filePath,
+            sampleRateHz,
+            sdr::VideoStandard::NTSC_525_30FPS,
+            0);
+    return shouldSelectNtscForAuto(palFrame, ntscFrame)
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : sdr::VideoStandard::PAL625_25FPS;
+}
+
+AnalogPlaybackSession* createAnalogPlaybackSession(
+        const std::string& filePath,
+        bool hasSampleRateHz,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard requestedStandard) {
+    if (!hasSampleRateHz || sampleRateHz == 0) {
+        return nullptr;
+    }
+
+    const auto sourceSampleRate =
+            sampleRateHz <=
+                            static_cast<std::uint64_t>(
+                                    std::numeric_limits<std::uint32_t>::max())
+                    ? static_cast<std::uint32_t>(sampleRateHz)
+                    : 0;
+
+    auto session = std::make_unique<AnalogPlaybackSession>();
+    session->sampleRateHz = sampleRateHz;
+    session->standard = choosePlaybackStandard(filePath, sampleRateHz, requestedStandard);
+    session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
+    session->totalSampleCount = fileSizeBytes(filePath) / kBytesPerIqSample;
+    session->source = std::make_unique<sdr::FileSource>(filePath, sourceSampleRate);
+
+    const auto openStatus = session->source->open();
+    if (!openStatus.ok()) {
+        return nullptr;
+    }
+
+    sdr::AnalogVideoDecoderConfig config;
+    config.sampleRateHz = sampleRateHz;
+    config.analysisRateHz = 1500000;
+    config.readBlockSamples = 262144;
+    config.fastFieldPreview = true;
+    config.detectFrameSyncInFastPreview = true;
+    config.fastPreviewFieldStride = 2;
+    config.timing = sdr::timingForStandard(session->standard);
+    if (session->playbackFrameRateHz > 0.0) {
+        config.timing.frameRateHz = session->playbackFrameRateHz;
+    }
+    session->decoder = std::make_unique<sdr::AnalogVideoDecoder>(config);
+
+    return session.release();
+}
+
+sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
+    auto frame = session.decoder->decodeOneFrame(*session.source);
+    if (!frame.valid()) {
+        const auto seekStatus = session.source->seekSamples(0);
+        session.frameIndex = 0;
+        if (seekStatus.ok()) {
+            frame = session.decoder->decodeOneFrame(*session.source);
+        }
+    }
+
+    if (frame.valid()) {
+        std::ostringstream message;
+        message << frame.message
+                << "; playback_session=sequential"
+                << "; playback_frame_rate_hz=" << session.playbackFrameRateHz
+                << "; playback_frame_index=" << session.frameIndex;
+        frame.message = message.str();
+        ++session.frameIndex;
+    }
+    return frame;
+}
+
+sdr::VideoStandard videoStandardFromJInt(jint standard) {
+    switch (standard) {
+        case 1:
+            return sdr::VideoStandard::PAL625_25FPS;
+        case 2:
+            return sdr::VideoStandard::NTSC_525_30FPS;
+        case 0:
+        default:
+            return sdr::VideoStandard::AUTO;
+    }
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -444,4 +733,73 @@ Java_com_example_sdrvideoscanner_MainActivity_diagnoseCs16Spectrum(
 
     const auto diagnostic = diagnoseSpectrum(filePath, metadata);
     return env->NewStringUTF(diagnostic.c_str());
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_decodeAnalogVideoFrame(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring path,
+        jboolean hasSampleRateHz,
+        jlong sampleRateHz,
+        jint videoStandard,
+        jlong frameIndex) {
+    std::string pathError;
+    const auto filePath = pathFromJString(env, path, pathError);
+    if (!pathError.empty()) {
+        return env->NewByteArray(0);
+    }
+
+    const auto frame = decodeAnalogVideoFrame(
+            filePath,
+            hasSampleRateHz == JNI_TRUE,
+            positiveJLongOrZero(sampleRateHz),
+            videoStandardFromJInt(videoStandard),
+            positiveJLongOrZero(frameIndex));
+    return frameToJByteArray(env, frame);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createAnalogVideoPlaybackSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring path,
+        jboolean hasSampleRateHz,
+        jlong sampleRateHz,
+        jint videoStandard) {
+    std::string pathError;
+    const auto filePath = pathFromJString(env, path, pathError);
+    if (!pathError.empty()) {
+        return 0;
+    }
+
+    auto* session = createAnalogPlaybackSession(
+            filePath,
+            hasSampleRateHz == JNI_TRUE,
+            positiveJLongOrZero(sampleRateHz),
+            videoStandardFromJInt(videoStandard));
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_decodeNextAnalogVideoPlaybackFrame(
+        JNIEnv* env,
+        jobject /* this */,
+        jlong sessionHandle) {
+    auto* session = reinterpret_cast<AnalogPlaybackSession*>(sessionHandle);
+    if (session == nullptr || session->source == nullptr || session->decoder == nullptr) {
+        return env->NewByteArray(0);
+    }
+
+    const auto frame = decodeNextPlaybackFrame(*session);
+    return frameToJByteArray(env, frame);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_closeAnalogVideoPlaybackSession(
+        JNIEnv* /* env */,
+        jobject /* this */,
+        jlong sessionHandle) {
+    auto* session = reinterpret_cast<AnalogPlaybackSession*>(sessionHandle);
+    delete session;
 }

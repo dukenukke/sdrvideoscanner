@@ -9,13 +9,6 @@ namespace {
 constexpr std::size_t kBytesPerIqPair =
         sizeof(std::int16_t) * SampleBuffer::kValuesPerIqSample;
 
-std::int16_t decodeLittleEndianInt16(const std::uint8_t* bytes) {
-    const auto value = static_cast<std::uint16_t>(
-            static_cast<std::uint16_t>(bytes[0]) |
-            (static_cast<std::uint16_t>(bytes[1]) << 8));
-    return static_cast<std::int16_t>(value);
-}
-
 SourceStatus makeStatus(SampleSourceError error, std::string message) {
     return SourceStatus{error, std::move(message)};
 }
@@ -69,6 +62,30 @@ SampleFormat FileSource::format() const {
     return format_;
 }
 
+SourceStatus FileSource::seekSamples(std::uint64_t sampleOffset) {
+    if (!file_.is_open()) {
+        return makeStatus(SampleSourceError::NotOpen, "IQ file is not open");
+    }
+
+    constexpr auto bytesPerIqPair = static_cast<std::uint64_t>(kBytesPerIqPair);
+    if (sampleOffset > (std::numeric_limits<std::uint64_t>::max() / bytesPerIqPair)) {
+        return makeStatus(SampleSourceError::InvalidArgument, "IQ sample seek offset is too large");
+    }
+
+    const auto byteOffset = sampleOffset * bytesPerIqPair;
+    if (byteOffset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+        return makeStatus(SampleSourceError::InvalidArgument, "IQ byte seek offset is too large");
+    }
+
+    file_.clear();
+    file_.seekg(static_cast<std::streamoff>(byteOffset), std::ios::beg);
+    if (!file_.good()) {
+        return makeStatus(SampleSourceError::ReadFailed, "Failed to seek IQ file");
+    }
+
+    return {};
+}
+
 ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
     buffer.clear();
 
@@ -91,10 +108,8 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
     }
 
     buffer.resizeSamples(maxSamples);
-    readBuffer_.resize(maxSamples * kBytesPerIqPair);
-
     const auto requestedBytes = static_cast<std::streamsize>(maxSamples * kBytesPerIqPair);
-    file_.read(reinterpret_cast<char*>(readBuffer_.data()), requestedBytes);
+    file_.read(reinterpret_cast<char*>(buffer.data()), requestedBytes);
 
     const auto bytesRead = file_.gcount();
     if (bytesRead == 0 && file_.eof()) {
@@ -118,11 +133,6 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
 
     const auto samplesRead = static_cast<std::size_t>(bytesRead) / kBytesPerIqPair;
     buffer.resizeSamples(samplesRead);
-
-    const auto valueCount = samplesRead * SampleBuffer::kValuesPerIqSample;
-    for (std::size_t index = 0; index < valueCount; ++index) {
-        buffer.data()[index] = decodeLittleEndianInt16(&readBuffer_[index * sizeof(std::int16_t)]);
-    }
 
     return makeReadResult(samplesRead, file_.eof(), SampleSourceError::None, {});
 }

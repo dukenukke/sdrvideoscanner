@@ -8,24 +8,120 @@
 
     <Button
         android:id="@+id/diagnose_button"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="4dp"
         android:text="Diagnose CS16 blocks"
-        app:layout_constraintBottom_toTopOf="@id/spectrum_button"
-        app:layout_constraintEnd_toEndOf="parent"
+        android:visibility="gone"
+        app:layout_constraintEnd_toStartOf="@id/spectrum_button"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_chainStyle="packed" />
+        app:layout_constraintHorizontal_chainStyle="spread" />
 
     <Button
         android:id="@+id/spectrum_button"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="16dp"
         android:text="Analyze spectrum"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/diagnose_button"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <Button
+        android:id="@+id/decode_frame_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="4dp"
+        android:text="Decode AUTO"
+        android:visibility="gone"
+        app:layout_constraintEnd_toStartOf="@id/decode_pal_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/spectrum_button" />
+
+    <Button
+        android:id="@+id/decode_pal_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="16dp"
+        android:text="Decode PAL625"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/decode_frame_button"
+        app:layout_constraintTop_toBottomOf="@id/spectrum_button" />
+
+    <Button
+        android:id="@+id/decode_ntsc_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="4dp"
+        android:text="Decode NTSC525"
+        android:visibility="gone"
+        app:layout_constraintEnd_toStartOf="@id/play_auto_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/spectrum_button" />
+
+    <Button
+        android:id="@+id/play_auto_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="16dp"
+        android:text="Play AUTO"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/decode_ntsc_button"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <Button
+        android:id="@+id/play_ntsc_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="4dp"
+        android:text="Play NTSC525"
+        app:layout_constraintEnd_toStartOf="@id/stop_playback_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/play_auto_button" />
+
+    <Button
+        android:id="@+id/stop_playback_button"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginEnd="16dp"
+        android:text="Stop"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/play_ntsc_button"
+        app:layout_constraintTop_toBottomOf="@id/play_auto_button" />
+
+    <ImageView
+        android:id="@+id/video_frame_image"
+        android:layout_width="0dp"
+        android:layout_height="240dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="24dp"
+        android:background="#111111"
+        android:contentDescription="Decoded grayscale analog video frame"
+        android:scaleType="fitCenter"
         app:layout_constraintBottom_toTopOf="@id/sample_text"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/diagnose_button" />
+        app:layout_constraintTop_toBottomOf="@id/stop_playback_button" />
 
     <TextView
         android:id="@+id/sample_text"
@@ -38,7 +134,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/spectrum_button"
+        app:layout_constraintTop_toBottomOf="@id/video_frame_image"
         tools:text="CS16 diagnostics appear here" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

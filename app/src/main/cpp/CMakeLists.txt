@@ -28,9 +28,20 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         native-lib.cpp
         source/analyzer/SpectrumAnalyzer.cpp
-        source/file/FileSource.cpp)
+        source/file/FileSource.cpp
+        source/video/AmDemodulator.cpp
+        source/video/AnalogVideoDecoder.cpp
+        source/video/FmDemodulator.cpp
+        source/video/FrameAssembler.cpp
+        source/video/SyncDetector.cpp
+        source/video/VideoLowPassFilter.cpp
+        source/video/VideoNormalizer.cpp)
 
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)
+
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -O3
+        -fno-math-errno)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR})
