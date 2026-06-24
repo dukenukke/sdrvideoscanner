@@ -419,8 +419,26 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        binding.videoFrameImage.setImageBitmap(frame.bitmap)
+        setVideoFrameBitmap(frame.bitmap)
         binding.sampleText.text = metadata.toDiagnosticText() + "\n\n" + frame.diagnostic
+    }
+
+    private fun setVideoFrameBitmap(bitmap: Bitmap) {
+        binding.videoFrameImage.setImageBitmap(bitmap)
+        binding.videoFrameImage.post {
+            val availableWidth = binding.videoFrameImage.width
+            if (availableWidth <= 0 || bitmap.width <= 0 || bitmap.height <= 0) {
+                return@post
+            }
+            val targetHeight = ((availableWidth.toLong() * bitmap.height.toLong()) / bitmap.width.toLong())
+                .coerceAtLeast((260 * resources.displayMetrics.density).toLong())
+                .toInt()
+            val params = binding.videoFrameImage.layoutParams
+            if (params.height != targetHeight) {
+                params.height = targetHeight
+                binding.videoFrameImage.layoutParams = params
+            }
+        }
     }
 
     private fun decodeFrame(
@@ -544,7 +562,7 @@ class MainActivity : AppCompatActivity() {
                     return@post
                 }
 
-                binding.videoFrameImage.setImageBitmap(frame.bitmap)
+                setVideoFrameBitmap(frame.bitmap)
                 if ((frameIndex % PLAYBACK_DIAGNOSTIC_EVERY_FRAMES) == 0L) {
                     binding.sampleText.text = metadata.toDiagnosticText() +
                         "\n\nplayback_frame_index: $frameIndex\n" + frame.diagnostic
@@ -591,7 +609,7 @@ class MainActivity : AppCompatActivity() {
                     return@post
                 }
 
-                binding.videoFrameImage.setImageBitmap(frame.bitmap)
+                setVideoFrameBitmap(frame.bitmap)
                 if ((frameIndex % SPECTRUM_DIAGNOSTIC_EVERY_FRAMES) == 0L) {
                     binding.sampleText.text = frame.diagnostic
                 }
