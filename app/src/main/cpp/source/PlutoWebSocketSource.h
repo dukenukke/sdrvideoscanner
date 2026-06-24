@@ -36,6 +36,8 @@ public:
     ReadResult read(SampleBuffer& buffer, std::size_t maxSamples) override;
 
 private:
+    SourceStatus initializeReadCache(std::size_t targetBytes);
+
     PlutoWebSocketSourceConfig config_;
     SampleFormat format_;
 

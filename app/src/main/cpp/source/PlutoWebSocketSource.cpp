@@ -196,10 +196,15 @@ std::string javaLastError(jobject transport) {
 
 ReadResult readJavaTransport(
         jobject transport,
+        jmethodID readMethod,
+        jbyteArray readBuffer,
         std::vector<std::uint8_t>& destination,
         std::size_t targetBytes) {
     if (transport == nullptr) {
         return makeReadResult(0, false, SampleSourceError::ReadFailed, "Android WebSocket transport object is not set");
+    }
+    if (readMethod == nullptr || readBuffer == nullptr) {
+        return makeReadResult(0, false, SampleSourceError::ReadFailed, "Android WebSocket transport read cache is not initialized");
     }
     if (targetBytes > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
         return makeReadResult(0, false, SampleSourceError::ReadFailed, "Pluto WebSocket read target is too large");
@@ -210,63 +215,31 @@ ReadResult readJavaTransport(
         return makeReadResult(0, false, SampleSourceError::ReadFailed, "Android WebSocket transport is unavailable: JavaVM is not set");
     }
 
-    auto* cls = jni.env->GetObjectClass(transport);
-    if (cls == nullptr) {
-        const auto exception = javaExceptionMessage(jni.env, "GetObjectClass PlutoWebSocketTransport");
-        return makeReadResult(
-                0,
-                false,
-                SampleSourceError::ReadFailed,
-                exception.empty() ? "Android WebSocket transport class was not found" : exception);
-    }
-    auto* method = jni.env->GetMethodID(cls, "read", "([BI)I");
-    if (method == nullptr) {
-        jni.env->DeleteLocalRef(cls);
-        const auto exception = javaExceptionMessage(jni.env, "read");
-        return makeReadResult(
-                0,
-                false,
-                SampleSourceError::ReadFailed,
-                exception.empty() ? "Android WebSocket transport read method was not found" : exception);
-    }
-
-    auto* buffer = jni.env->NewByteArray(static_cast<jsize>(targetBytes));
-    if (buffer == nullptr) {
-        jni.env->DeleteLocalRef(cls);
-        return makeReadResult(0, false, SampleSourceError::ReadFailed, "Failed to allocate Android WebSocket read buffer");
-    }
-
     const auto bytesRead = jni.env->CallIntMethod(
             transport,
-            method,
-            buffer,
+            readMethod,
+            readBuffer,
             static_cast<jint>(targetBytes));
-    jni.env->DeleteLocalRef(cls);
 
     if (const auto exception = javaExceptionMessage(jni.env, "read"); !exception.empty()) {
-        jni.env->DeleteLocalRef(buffer);
         return makeReadResult(0, false, SampleSourceError::ReadFailed, exception);
     }
     if (bytesRead < 0) {
-        jni.env->DeleteLocalRef(buffer);
         return makeReadResult(0, false, SampleSourceError::ReadFailed, javaLastError(transport));
     }
     if (bytesRead == 0) {
-        jni.env->DeleteLocalRef(buffer);
         return makeReadResult(0, true, SampleSourceError::ReadFailed, "Pluto WebSocket stream closed");
     }
     if ((bytesRead % 2) != 0) {
-        jni.env->DeleteLocalRef(buffer);
         return makeReadResult(0, false, SampleSourceError::ReadFailed, "Malformed Pluto WebSocket CS8 stream: incomplete I/Q pair");
     }
 
     destination.resize(static_cast<std::size_t>(bytesRead));
     jni.env->GetByteArrayRegion(
-            buffer,
+            readBuffer,
             0,
             bytesRead,
             reinterpret_cast<jbyte*>(destination.data()));
-    jni.env->DeleteLocalRef(buffer);
 
     if (const auto exception = javaExceptionMessage(jni.env, "GetByteArrayRegion"); !exception.empty()) {
         return makeReadResult(0, false, SampleSourceError::ReadFailed, exception);
@@ -279,6 +252,9 @@ ReadResult readJavaTransport(
 
 struct PlutoWebSocketSource::Impl {
     std::vector<std::uint8_t> readScratch;
+    jmethodID readMethod = nullptr;
+    jbyteArray javaReadBuffer = nullptr;
+    std::size_t javaReadBufferBytes = 0;
     bool streamOpen = false;
     std::uint64_t bytesReceived = 0;
     std::uint64_t samplesReceived = 0;
@@ -331,11 +307,56 @@ SourceStatus PlutoWebSocketSource::open() {
     if (!status.ok()) {
         return status;
     }
+    const auto readBufferBytes = std::max<std::size_t>(
+            config_.bufferSamples,
+            1024U) * SampleBuffer::kValuesPerIqSample;
+    const auto cacheStatus = initializeReadCache(readBufferBytes);
+    if (!cacheStatus.ok()) {
+        callJavaVoidMethod(config_.androidWebSocketTransport, "close");
+        return cacheStatus;
+    }
+    impl_->readScratch.resize(readBufferBytes);
     impl_->streamOpen = true;
     impl_->statsWindowStart = std::chrono::steady_clock::now();
     impl_->bytesReceived = 0;
     impl_->samplesReceived = 0;
     impl_->dropoutCount = 0;
+    return {};
+}
+
+SourceStatus PlutoWebSocketSource::initializeReadCache(std::size_t targetBytes) {
+    if (targetBytes > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
+        return makeStatus(SampleSourceError::InvalidArgument, "Pluto WebSocket read buffer target is too large");
+    }
+    auto jni = currentJniEnv();
+    if (jni.env == nullptr) {
+        return makeStatus(SampleSourceError::OpenFailed, "Android WebSocket transport is unavailable: JavaVM is not set");
+    }
+    auto* cls = jni.env->GetObjectClass(config_.androidWebSocketTransport);
+    if (cls == nullptr) {
+        const auto exception = javaExceptionMessage(jni.env, "GetObjectClass PlutoWebSocketTransport");
+        return makeStatus(
+                SampleSourceError::OpenFailed,
+                exception.empty() ? "Android WebSocket transport class was not found" : exception);
+    }
+    impl_->readMethod = jni.env->GetMethodID(cls, "read", "([BI)I");
+    jni.env->DeleteLocalRef(cls);
+    if (impl_->readMethod == nullptr) {
+        const auto exception = javaExceptionMessage(jni.env, "read");
+        return makeStatus(
+                SampleSourceError::OpenFailed,
+                exception.empty() ? "Android WebSocket transport read method was not found" : exception);
+    }
+    auto* localBuffer = jni.env->NewByteArray(static_cast<jsize>(targetBytes));
+    if (localBuffer == nullptr) {
+        return makeStatus(SampleSourceError::OpenFailed, "Failed to allocate reusable Android WebSocket read buffer");
+    }
+    impl_->javaReadBuffer = static_cast<jbyteArray>(jni.env->NewGlobalRef(localBuffer));
+    jni.env->DeleteLocalRef(localBuffer);
+    if (impl_->javaReadBuffer == nullptr) {
+        return makeStatus(SampleSourceError::OpenFailed, "Failed to retain reusable Android WebSocket read buffer");
+    }
+    impl_->javaReadBufferBytes = targetBytes;
     return {};
 }
 
@@ -345,6 +366,15 @@ void PlutoWebSocketSource::close() {
     }
     impl_->streamOpen = false;
     impl_->readScratch.clear();
+    impl_->readMethod = nullptr;
+    impl_->javaReadBufferBytes = 0;
+    if (impl_->javaReadBuffer != nullptr) {
+        auto jni = currentJniEnv();
+        if (jni.env != nullptr) {
+            jni.env->DeleteGlobalRef(impl_->javaReadBuffer);
+        }
+        impl_->javaReadBuffer = nullptr;
+    }
 }
 
 bool PlutoWebSocketSource::isOpen() const {
@@ -365,8 +395,16 @@ ReadResult PlutoWebSocketSource::read(SampleBuffer& buffer, std::size_t maxSampl
     }
 
     const auto targetBytes = maxSamples * SampleBuffer::kValuesPerIqSample;
+    if (targetBytes > impl_->javaReadBufferBytes) {
+        return makeReadResult(0, false, SampleSourceError::ReadFailed, "Pluto WebSocket read target exceeds reusable buffer");
+    }
     impl_->readScratch.resize(targetBytes);
-    auto readResult = readJavaTransport(config_.androidWebSocketTransport, impl_->readScratch, targetBytes);
+    auto readResult = readJavaTransport(
+            config_.androidWebSocketTransport,
+            impl_->readMethod,
+            impl_->javaReadBuffer,
+            impl_->readScratch,
+            targetBytes);
     if (!readResult.ok() || readResult.samplesRead == 0) {
         ++impl_->dropoutCount;
         logWarn("Pluto WebSocket read dropout: " + readResult.message);

@@ -94,21 +94,17 @@ class PlutoWebSocketTransport private constructor(
                     break
                 }
 
-                when (val frame = readFrame()) {
-                    is WebSocketFrame.Binary -> {
-                        // plutorx_ws binary frame payloads are raw CS8 bytes with no per-frame header.
-                        pendingBinary = frame.payload
-                        pendingOffset = 0
-                    }
-                    is WebSocketFrame.Text -> {
+                when (val frame = readFrameInto(destination, copied, maxBytes - copied)) {
+                    is WebSocketReadResult.Copied -> copied += frame.byteCount
+                    is WebSocketReadResult.Text -> {
                         Log.i(LOG_TAG, "Ignoring Pluto WebSocket text frame after metadata: ${frame.text.take(TEXT_LOG_LIMIT)}")
                     }
-                    is WebSocketFrame.Close -> {
+                    is WebSocketReadResult.Close -> {
                         closeSocketOnly()
                         return if (copied > 0) copied else 0
                     }
-                    is WebSocketFrame.Ping -> writeControlFrame(OPCODE_PONG, frame.payload)
-                    is WebSocketFrame.Pong -> Unit
+                    is WebSocketReadResult.Ping -> writeControlFrame(OPCODE_PONG, frame.payload)
+                    is WebSocketReadResult.Pong -> Unit
                 }
             }
             recordBytesReceived(copied)
@@ -297,6 +293,80 @@ class PlutoWebSocketTransport private constructor(
         }
     }
 
+    private fun readFrameInto(destination: ByteArray, offset: Int, maxCopy: Int): WebSocketReadResult {
+        val first = readByteRequired()
+        val second = readByteRequired()
+        val fin = (first and 0x80) != 0
+        val opcode = first and 0x0F
+        val masked = (second and 0x80) != 0
+        val length = readPayloadLength(second and 0x7F)
+        if (length > MAX_FRAME_PAYLOAD_BYTES) {
+            throw IllegalStateException("WebSocket frame payload is too large: $length bytes")
+        }
+        val mask = if (masked) readExactly(MASK_BYTES) else null
+        if (!fin && opcode != OPCODE_BINARY && opcode != OPCODE_TEXT) {
+            throw IllegalStateException("Fragmented WebSocket control frame is invalid")
+        }
+
+        return when (opcode) {
+            OPCODE_BINARY, OPCODE_CONTINUATION -> readBinaryPayloadInto(destination, offset, maxCopy, length.toInt(), mask)
+            OPCODE_TEXT -> WebSocketReadResult.Text(readPayloadBytes(length.toInt(), mask).toString(Charsets.UTF_8))
+            OPCODE_CLOSE -> {
+                skipPayload(length.toInt())
+                WebSocketReadResult.Close
+            }
+            OPCODE_PING -> WebSocketReadResult.Ping(readPayloadBytes(length.toInt(), mask))
+            OPCODE_PONG -> {
+                skipPayload(length.toInt())
+                WebSocketReadResult.Pong
+            }
+            else -> throw IllegalStateException("Unsupported WebSocket opcode: $opcode")
+        }
+    }
+
+    private fun readBinaryPayloadInto(
+        destination: ByteArray,
+        offset: Int,
+        maxCopy: Int,
+        length: Int,
+        mask: ByteArray?,
+    ): WebSocketReadResult.Copied {
+        if (length == 0 || maxCopy <= 0) {
+            pendingBinary = readPayloadBytes(length, mask)
+            pendingOffset = 0
+            return WebSocketReadResult.Copied(0)
+        }
+
+        val copyCount = minOf(maxCopy, length, destination.size - offset)
+        if (mask == null) {
+            readExactlyInto(destination, offset, copyCount)
+            val remaining = length - copyCount
+            if (remaining > 0) {
+                pendingBinary = readExactly(remaining)
+                pendingOffset = 0
+            }
+            return WebSocketReadResult.Copied(copyCount)
+        }
+
+        val payload = readPayloadBytes(length, mask)
+        System.arraycopy(payload, 0, destination, offset, copyCount)
+        if (copyCount < payload.size) {
+            pendingBinary = payload
+            pendingOffset = copyCount
+        }
+        return WebSocketReadResult.Copied(copyCount)
+    }
+
+    private fun readPayloadBytes(length: Int, mask: ByteArray?): ByteArray {
+        val payload = readExactly(length)
+        if (mask != null) {
+            for (index in payload.indices) {
+                payload[index] = (payload[index].toInt() xor mask[index % MASK_BYTES].toInt()).toByte()
+            }
+        }
+        return payload
+    }
+
     private fun readPayloadLength(initialLength: Int): Long {
         return when (initialLength) {
             126 -> {
@@ -375,6 +445,31 @@ class PlutoWebSocketTransport private constructor(
         return result
     }
 
+    private fun readExactlyInto(destination: ByteArray, offset: Int, count: Int) {
+        var copied = 0
+        val stream = inputOrThrow()
+        while (copied < count) {
+            val read = stream.read(destination, offset + copied, count - copied)
+            if (read < 0) {
+                throw EOFException("WebSocket stream closed while reading $count bytes")
+            }
+            copied += read
+        }
+    }
+
+    private fun skipPayload(count: Int) {
+        var remaining = count
+        val scratch = ByteArray(minOf(count, CONTROL_SKIP_BUFFER_BYTES))
+        val stream = inputOrThrow()
+        while (remaining > 0) {
+            val read = stream.read(scratch, 0, minOf(scratch.size, remaining))
+            if (read < 0) {
+                throw EOFException("WebSocket stream closed while skipping $count bytes")
+            }
+            remaining -= read
+        }
+    }
+
     private fun closeSocketOnly() {
         pendingBinary = null
         pendingOffset = 0
@@ -440,6 +535,14 @@ class PlutoWebSocketTransport private constructor(
         object Close : WebSocketFrame()
     }
 
+    private sealed class WebSocketReadResult {
+        data class Copied(val byteCount: Int) : WebSocketReadResult()
+        data class Text(val text: String) : WebSocketReadResult()
+        data class Ping(val payload: ByteArray) : WebSocketReadResult()
+        object Pong : WebSocketReadResult()
+        object Close : WebSocketReadResult()
+    }
+
     companion object {
         private const val LOG_TAG = "SDRVideoScanner.PlutoWs"
         private const val BYTES_PER_CS8_SAMPLE = 2
@@ -447,6 +550,7 @@ class PlutoWebSocketTransport private constructor(
         private const val MAX_FRAME_PAYLOAD_BYTES = 32_000_000L
         private const val MAX_METADATA_CONTROL_FRAMES = 8
         private const val LOW_LATENCY_RECEIVE_BUFFER_BYTES = 128 * 1024
+        private const val CONTROL_SKIP_BUFFER_BYTES = 256
         private const val TEXT_LOG_LIMIT = 256
         private const val MASK_BYTES = 4
         private const val OPCODE_CONTINUATION = 0x0
