@@ -49,8 +49,10 @@ void VideoNormalizer::normalize(
     float minimum = 0.0F;
     float maximum = 0.0F;
     std::size_t finiteCount = 0;
+    bool allFinite = true;
     for (const auto sample : envelope) {
         if (!std::isfinite(sample)) {
+            allFinite = false;
             continue;
         }
         if (finiteCount == 0) {
@@ -70,14 +72,27 @@ void VideoNormalizer::normalize(
 
     std::array<std::uint32_t, kHistogramBins> histogram{};
     const float binScale = static_cast<float>(kHistogramBins - 1U) / (maximum - minimum);
-    for (const auto sample : envelope) {
-        if (!std::isfinite(sample)) {
-            continue;
+    if (allFinite) {
+        for (const auto sample : envelope) {
+            const auto scaled = static_cast<int>((sample - minimum) * binScale);
+            const auto bin = static_cast<std::size_t>(
+                    std::min<int>(
+                            static_cast<int>(kHistogramBins - 1U),
+                            std::max<int>(0, scaled)));
+            ++histogram[bin];
         }
-        const auto bin = static_cast<std::size_t>(
-                std::clamp((sample - minimum) * binScale, 0.0F,
-                           static_cast<float>(kHistogramBins - 1U)));
-        ++histogram[bin];
+    } else {
+        for (const auto sample : envelope) {
+            if (!std::isfinite(sample)) {
+                continue;
+            }
+            const auto scaled = static_cast<int>((sample - minimum) * binScale);
+            const auto bin = static_cast<std::size_t>(
+                    std::min<int>(
+                            static_cast<int>(kHistogramBins - 1U),
+                            std::max<int>(0, scaled)));
+            ++histogram[bin];
+        }
     }
 
     const float low = histogramPercentile(histogram, finiteCount, minimum, maximum, 0.01);
@@ -89,10 +104,22 @@ void VideoNormalizer::normalize(
     }
 
     const float scale = 255.0F / (high - low);
-    for (std::size_t index = 0; index < envelope.size(); ++index) {
-        const float normalized = (envelope[index] - low) * scale;
-        const auto clamped = std::clamp(normalized, 0.0F, 255.0F);
-        video[index] = static_cast<std::uint8_t>(clamped + 0.5F);
+    if (allFinite) {
+        for (std::size_t index = 0; index < envelope.size(); ++index) {
+            const int normalized = static_cast<int>(((envelope[index] - low) * scale) + 0.5F);
+            video[index] = static_cast<std::uint8_t>(
+                    std::min(255, std::max(0, normalized)));
+        }
+    } else {
+        for (std::size_t index = 0; index < envelope.size(); ++index) {
+            if (!std::isfinite(envelope[index])) {
+                video[index] = 0;
+                continue;
+            }
+            const int normalized = static_cast<int>(((envelope[index] - low) * scale) + 0.5F);
+            video[index] = static_cast<std::uint8_t>(
+                    std::min(255, std::max(0, normalized)));
+        }
     }
 }
 

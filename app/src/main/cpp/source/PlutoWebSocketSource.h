@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <jni.h>
 
@@ -19,6 +20,7 @@ struct PlutoWebSocketSourceConfig {
     std::string path = "/iq";
     std::uint32_t sampleRateHz = 25000000;
     std::size_t bufferSamples = 32768;
+    std::size_t receiveBufferSamples = 0;
     jobject androidWebSocketTransport = nullptr;
 };
 
@@ -37,6 +39,11 @@ public:
 
 private:
     SourceStatus initializeReadCache(std::size_t targetBytes);
+    SourceStatus startReceiver();
+    void stopReceiver();
+    void receiverLoop();
+    void pushReceivedBytes(const std::vector<std::uint8_t>& bytes, std::size_t sampleCount);
+    ReadResult readFromReceiveBuffer(SampleBuffer& buffer, std::size_t maxSamples);
 
     PlutoWebSocketSourceConfig config_;
     SampleFormat format_;

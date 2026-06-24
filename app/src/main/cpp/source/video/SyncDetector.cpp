@@ -13,7 +13,7 @@ std::size_t samplesForSeconds(std::uint64_t sampleRateHz, double seconds) {
             std::max(1.0, std::round(static_cast<double>(sampleRateHz) * seconds)));
 }
 
-std::uint8_t percentile(std::vector<std::uint8_t> values, double fraction) {
+std::uint8_t percentileInPlace(std::vector<std::uint8_t>& values, double fraction) {
     if (values.empty()) {
         return 0;
     }
@@ -22,6 +22,36 @@ std::uint8_t percentile(std::vector<std::uint8_t> values, double fraction) {
             std::clamp(fraction, 0.0, 1.0) * static_cast<double>(values.size() - 1));
     std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(index), values.end());
     return values[index];
+}
+
+void percentilePairInPlace(
+        std::vector<float>& values,
+        double fractionA,
+        double fractionB,
+        float& percentileA,
+        float& percentileB) {
+    if (values.empty()) {
+        percentileA = 0.0F;
+        percentileB = 0.0F;
+        return;
+    }
+
+    auto indexA = static_cast<std::size_t>(
+            std::clamp(fractionA, 0.0, 1.0) * static_cast<double>(values.size() - 1));
+    auto indexB = static_cast<std::size_t>(
+            std::clamp(fractionB, 0.0, 1.0) * static_cast<double>(values.size() - 1));
+    if (indexB < indexA) {
+        std::swap(indexA, indexB);
+        std::swap(fractionA, fractionB);
+    }
+
+    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(indexA), values.end());
+    percentileA = values[indexA];
+    std::nth_element(
+            values.begin() + static_cast<std::ptrdiff_t>(indexA),
+            values.begin() + static_cast<std::ptrdiff_t>(indexB),
+            values.end());
+    percentileB = values[indexB];
 }
 
 std::vector<std::uint8_t> smoothVideo(
@@ -51,9 +81,12 @@ std::vector<std::uint8_t> smoothVideo(
     return smoothed;
 }
 
-std::vector<float> centeredFloatVideo(const std::vector<std::uint8_t>& video) {
+std::vector<float> centeredFloatVideo(
+        const std::vector<std::uint8_t>& video,
+        std::vector<std::uint8_t>& scratch) {
     std::vector<float> centered(video.size());
-    const auto median = static_cast<float>(percentile(video, 0.50));
+    scratch = video;
+    const auto median = static_cast<float>(percentileInPlace(scratch, 0.50));
     for (std::size_t index = 0; index < video.size(); ++index) {
         centered[index] = static_cast<float>(video[index]) - median;
     }
@@ -133,6 +166,24 @@ double stddevFloat(const std::vector<float>& values, double mean) {
     return std::sqrt(sumSquares / static_cast<double>(values.size()));
 }
 
+double meanAndStddevFloat(const std::vector<float>& values, double& mean) {
+    if (values.empty()) {
+        mean = 0.0;
+        return 0.0;
+    }
+
+    double sum = 0.0;
+    double sumSquares = 0.0;
+    for (const auto value : values) {
+        const double sample = static_cast<double>(value);
+        sum += sample;
+        sumSquares += sample * sample;
+    }
+    mean = sum / static_cast<double>(values.size());
+    const double variance = (sumSquares / static_cast<double>(values.size())) - (mean * mean);
+    return std::sqrt(std::max(0.0, variance));
+}
+
 std::vector<std::size_t> detectFrameSyncEdges(
         const std::vector<std::uint8_t>& video,
         std::uint64_t sampleRateHz) {
@@ -141,23 +192,31 @@ std::vector<std::size_t> detectFrameSyncEdges(
         return edges;
     }
 
-    auto centered = centeredFloatVideo(video);
+    std::vector<std::uint8_t> byteScratch;
+    auto centered = centeredFloatVideo(video, byteScratch);
     auto smooth = movingAverageFloat(centered, sampleRateHz, 0.00035);
-    const float median = percentileFloat(smooth, 0.50);
-    const float negScore = std::fabs(percentileFloat(smooth, 0.01) - median);
-    const float posScore = std::fabs(percentileFloat(smooth, 0.99) - median);
+    auto smoothScratch = smooth;
+    float lowPercentile = 0.0F;
+    float highPercentile = 0.0F;
+    percentilePairInPlace(smoothScratch, 0.01, 0.99, lowPercentile, highPercentile);
+    auto medianScratch = smooth;
+    const float median = percentileFloat(std::move(medianScratch), 0.50);
+    const float negScore = std::fabs(lowPercentile - median);
+    const float posScore = std::fabs(highPercentile - median);
 
     std::vector<float> sync(smooth.size());
     for (std::size_t index = 0; index < smooth.size(); ++index) {
         sync[index] = (negScore >= posScore) ? -smooth[index] : smooth[index];
     }
 
-    const float syncMedian = percentileFloat(sync, 0.50);
+    auto syncScratch = sync;
+    const float syncMedian = percentileFloat(std::move(syncScratch), 0.50);
     for (auto& value : sync) {
         value -= syncMedian;
     }
 
-    const auto sigma = stddevFloat(sync, meanFloat(sync)) + 1.0e-12;
+    double syncMean = 0.0;
+    const auto sigma = meanAndStddevFloat(sync, syncMean) + 1.0e-12;
     for (auto& value : sync) {
         value = static_cast<float>(static_cast<double>(value) / sigma);
     }
@@ -317,8 +376,9 @@ SyncDetectionResult detectHorizontalSyncsInternal(
             std::max(1.0, std::round(static_cast<double>(lineSamples) * 0.55)));
 
     const auto smoothed = smoothVideo(video, sampleRateHz, 0.75e-6);
-    const auto lowThreshold = percentile(smoothed, 0.08);
-    const auto highThreshold = percentile(smoothed, 0.92);
+    auto thresholdScratch = smoothed;
+    const auto lowThreshold = percentileInPlace(thresholdScratch, 0.08);
+    const auto highThreshold = percentileInPlace(thresholdScratch, 0.92);
     const auto expectedLineCount = maxSyncs > 800U ? (maxSyncs / 2U) : maxSyncs;
 
     auto lowResult = makeResult(

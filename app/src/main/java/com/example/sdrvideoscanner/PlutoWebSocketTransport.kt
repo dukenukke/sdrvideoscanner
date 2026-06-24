@@ -135,6 +135,10 @@ class PlutoWebSocketTransport private constructor(
         closeSocketOnly()
     }
 
+    fun interruptRead() {
+        closeSocketOnly()
+    }
+
     @Synchronized
     fun lastError(): String = lastError
 
