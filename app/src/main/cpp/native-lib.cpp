@@ -1171,6 +1171,7 @@ AnalogPlaybackSession* createPlutoWebSocketPlaybackSession(
         std::uint32_t port,
         const std::string& path,
         std::uint64_t sampleRateHz,
+        std::uint32_t receiveBufferMs,
         sdr::VideoStandard requestedStandard,
         jobject androidWebSocketTransport) {
     if (port == 0 || port > 65535U) {
@@ -1200,6 +1201,9 @@ AnalogPlaybackSession* createPlutoWebSocketPlaybackSession(
     config.path = path;
     config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
     config.bufferSamples = 32768;
+    const auto clampedReceiveBufferMs = std::clamp<std::uint32_t>(receiveBufferMs, 50U, 150U);
+    config.receiveBufferSamples = static_cast<std::size_t>(
+            (sampleRateHz * clampedReceiveBufferMs) / 1000U);
     config.androidWebSocketTransport = env->NewGlobalRef(androidWebSocketTransport);
     if (config.androidWebSocketTransport == nullptr) {
         setLastNativeError("Failed to retain Pluto Android WebSocket transport");
@@ -1233,6 +1237,7 @@ SpectrumViewSession* createPlutoWebSocketSpectrumSession(
         const std::string& path,
         std::uint64_t sampleRateHz,
         std::uint64_t centerFrequencyHz,
+        std::uint32_t receiveBufferMs,
         jobject androidWebSocketTransport) {
     if (port == 0 || port > 65535U) {
         setLastNativeError("Pluto WebSocket spectrum requires a TCP port between 1 and 65535");
@@ -1261,6 +1266,9 @@ SpectrumViewSession* createPlutoWebSocketSpectrumSession(
     config.path = path;
     config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
     config.bufferSamples = 32768;
+    const auto clampedReceiveBufferMs = std::clamp<std::uint32_t>(receiveBufferMs, 50U, 150U);
+    config.receiveBufferSamples = static_cast<std::size_t>(
+            (sampleRateHz * clampedReceiveBufferMs) / 1000U);
     config.androidWebSocketTransport = env->NewGlobalRef(androidWebSocketTransport);
     if (config.androidWebSocketTransport == nullptr) {
         setLastNativeError("Failed to retain Pluto Android WebSocket transport");
@@ -1832,6 +1840,7 @@ Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketAnalogVideoPla
         jint port,
         jstring path,
         jlong sampleRateHz,
+        jint receiveBufferMs,
         jint videoStandard,
         jobject androidWebSocketTransport) {
     const auto hostValue = stringFromJString(env, host);
@@ -1842,6 +1851,7 @@ Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketAnalogVideoPla
             static_cast<std::uint32_t>(std::max(port, 0)),
             pathValue,
             positiveJLongOrZero(sampleRateHz),
+            static_cast<std::uint32_t>(std::max(receiveBufferMs, 0)),
             videoStandardFromJInt(videoStandard),
             androidWebSocketTransport);
     return reinterpret_cast<jlong>(session);
@@ -1856,6 +1866,7 @@ Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketSpectrumSessio
         jstring path,
         jlong sampleRateHz,
         jlong centerFrequencyHz,
+        jint receiveBufferMs,
         jobject androidWebSocketTransport) {
     const auto hostValue = stringFromJString(env, host);
     const auto pathValue = stringFromJString(env, path);
@@ -1866,6 +1877,7 @@ Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketSpectrumSessio
             pathValue,
             positiveJLongOrZero(sampleRateHz),
             positiveJLongOrZero(centerFrequencyHz),
+            static_cast<std::uint32_t>(std::max(receiveBufferMs, 0)),
             androidWebSocketTransport);
     return reinterpret_cast<jlong>(session);
 }

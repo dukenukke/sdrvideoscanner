@@ -22,6 +22,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
+import android.widget.PopupMenu
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.example.sdrvideoscanner.databinding.ActivityMainBinding
@@ -64,6 +66,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlutoVideoStandard = VideoStandard.AUTO
     private var pendingPlutoIqConfig = defaultPlutoIqConfig()
     private var plutoIqConfig = defaultPlutoIqConfig()
+    private var statsVisible = true
     private var usbPermissionReceiverRegistered = false
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -95,7 +98,6 @@ class MainActivity : AppCompatActivity() {
                     PlutoUsbAction.SPECTRUM_VIEW -> startPlutoUsbSpectrum(device, config)
                     PlutoUsbAction.WEB_SOCKET_PLAYBACK -> startPlutoWebSocketPlayback(standard, config)
                     PlutoUsbAction.WEB_SOCKET_SPECTRUM -> startPlutoWebSocketSpectrum(config)
-                    PlutoUsbAction.WEB_SOCKET_TEST_CONNECTION -> testPlutoWebSocketConnection(config)
                 }
             } else {
                 binding.sampleText.text = "Pluto USB permission denied.\n\n" +
@@ -119,98 +121,24 @@ class MainActivity : AppCompatActivity() {
         val defaultIqPath = defaultIqPathForConfig()
         val defaultMetadataPath = metadataFileFor(defaultIqPath).absolutePath
         binding.sampleText.text = "Place ${File(defaultIqPath).name} at:\n$defaultIqPath\n\nOptional metadata:\n$defaultMetadataPath"
-        binding.capturePlutoButton.text = "Play Pluto SC16"
+        binding.currentMenuLabel.text = "Selected: Pluto WS CS8"
+        updateStatsVisibility()
         if (!isPlutoCaptureAvailable()) {
-            binding.capturePlutoButton.isEnabled = false
-            binding.recordIqButton.isEnabled = false
-            binding.spectrumViewButton.isEnabled = false
-            binding.capturePlutoButton.text = "Pluto unavailable"
-            binding.recordIqButton.text = "Pluto unavailable"
-            binding.spectrumViewButton.text = "Pluto unavailable"
             binding.sampleText.text = "Pluto capture is not compiled into this APK.\n\n" +
                 "Add Android libiio headers/libraries, then rebuild.\n\n" +
                 "Replay file path:\n$defaultIqPath\n\nOptional metadata:\n$defaultMetadataPath"
         } else if (!isPlutoUsbCaptureAvailable()) {
-            binding.capturePlutoButton.isEnabled = false
-            binding.recordIqButton.isEnabled = false
-            binding.spectrumViewButton.isEnabled = false
-            binding.capturePlutoButton.text = "Pluto USB unavailable"
-            binding.recordIqButton.text = "USB unavailable"
-            binding.spectrumViewButton.text = "USB unavailable"
             binding.sampleText.text = "Pluto direct USB capture is not available in this APK.\n\n" +
                 plutoUsbDiagnosticText() + "\n\n" +
                 "Rebuild/package libiio with the USB backend and libusb support.\n\n" +
                 "Replay file path:\n$defaultIqPath\n\nOptional metadata:\n$defaultMetadataPath"
         }
-        binding.setupIqButton.setOnClickListener {
-            showPlutoIqConfigDialog()
+        binding.mainMenuButton.setOnClickListener {
+            showMainMenu()
         }
-        binding.diagnoseButton.setOnClickListener {
-            val metadata = loadIqMetadata(defaultIqPath)
-            binding.sampleText.text = metadata.toDiagnosticText() + "\n\n" + diagnoseCs16FileBlocks(defaultIqPath)
-        }
-        binding.spectrumButton.setOnClickListener {
-            val metadata = loadIqMetadata(defaultIqPath)
-            binding.sampleText.text = diagnoseCs16SpectrumWithMetadata(defaultIqPath, metadata)
-        }
-        binding.recordIqButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            preparePlutoUsbCapture(defaultIqPathForConfig(), plutoIqConfig)
-        }
-        binding.capturePlutoButton.setOnClickListener {
-            stopSpectrum()
-            stopPlayback()
-            preparePlutoUsbPlayback(VideoStandard.AUTO, plutoIqConfig.copy(sampleFormat = IqSampleFormat.CS16))
-        }
-        binding.spectrumViewButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            preparePlutoUsbSpectrum(plutoIqConfig.copy(sampleFormat = IqSampleFormat.CS16))
-        }
-        binding.decodeFrameButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            val path = defaultIqPathForConfig()
-            val metadata = loadIqMetadata(path)
-            decodeAndDisplayFrame(path, metadata, VideoStandard.AUTO, frameIndex = 0L)
-        }
-        binding.decodePalButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            val path = defaultIqPathForConfig()
-            val metadata = loadIqMetadata(path)
-            decodeAndDisplayFrame(path, metadata, VideoStandard.PAL625_25FPS, frameIndex = 0L)
-        }
-        binding.decodeNtscButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            val path = defaultIqPathForConfig()
-            val metadata = loadIqMetadata(path)
-            decodeAndDisplayFrame(path, metadata, VideoStandard.NTSC_525_30FPS, frameIndex = 0L)
-        }
-        binding.playAutoButton.setOnClickListener {
-            stopSpectrum()
-            val path = defaultIqPathForConfig()
-            val metadata = loadIqMetadata(path)
-            startPlayback(path, metadata, VideoStandard.AUTO)
-        }
-        binding.playMaiaButton.setOnClickListener {
-            stopSpectrum()
-            stopPlayback()
-            preparePlutoWebSocketPlayback(VideoStandard.AUTO, plutoIqConfig)
-        }
-        binding.maiaSpectrumButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
-            preparePlutoWebSocketSpectrum(plutoIqConfig)
-        }
-        binding.testMaiaConnectionButton.setOnClickListener {
-            preparePlutoWebSocketConnectionTest(plutoIqConfig)
-        }
-        binding.stopPlaybackButton.setOnClickListener {
-            stopPlayback()
-            stopSpectrum()
+        binding.toggleStatsButton.setOnClickListener {
+            statsVisible = !statsVisible
+            updateStatsVisibility()
         }
     }
 
@@ -222,6 +150,71 @@ class MainActivity : AppCompatActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)
+    }
+
+    private fun showMainMenu() {
+        PopupMenu(this, binding.mainMenuButton).apply {
+            menu.add(0, MENU_PLAY_PLUTO_WS_CS8, 0, "Play Pluto WS CS8")
+            menu.add(0, MENU_STOP, 1, "Stop")
+            menu.add(0, MENU_SETUP_IQ, 2, "Setup IQ")
+            menu.add(0, MENU_RECORD_IQ, 3, "Record IQ")
+            menu.add(0, MENU_PLUTO_WS_FFT, 4, "Pluto WS FFT")
+            menu.add(0, MENU_PLAY_AUTO_FILE, 5, "Play AUTO file")
+            menu.add(0, MENU_DECODE_AUTO_FILE, 6, "Decode AUTO file")
+            setOnMenuItemClickListener { item ->
+                runMainMenuAction(item.itemId, item.title.toString())
+                true
+            }
+            show()
+        }
+    }
+
+    private fun runMainMenuAction(actionId: Int, title: String) {
+        setSelectedMenuItem(title)
+        when (actionId) {
+            MENU_PLAY_PLUTO_WS_CS8 -> {
+                stopSpectrum()
+                stopPlayback()
+                preparePlutoWebSocketPlayback(VideoStandard.AUTO, plutoIqConfig)
+            }
+            MENU_STOP -> {
+                stopPlayback()
+                stopSpectrum()
+            }
+            MENU_SETUP_IQ -> showPlutoIqConfigDialog()
+            MENU_RECORD_IQ -> {
+                stopPlayback()
+                stopSpectrum()
+                preparePlutoUsbCapture(defaultIqPathForConfig(), plutoIqConfig)
+            }
+            MENU_PLUTO_WS_FFT -> {
+                stopPlayback()
+                stopSpectrum()
+                preparePlutoWebSocketSpectrum(plutoIqConfig)
+            }
+            MENU_PLAY_AUTO_FILE -> {
+                stopSpectrum()
+                val path = defaultIqPathForConfig()
+                val metadata = loadIqMetadata(path)
+                startPlayback(path, metadata, VideoStandard.AUTO)
+            }
+            MENU_DECODE_AUTO_FILE -> {
+                stopPlayback()
+                stopSpectrum()
+                val path = defaultIqPathForConfig()
+                val metadata = loadIqMetadata(path)
+                decodeAndDisplayFrame(path, metadata, VideoStandard.AUTO, frameIndex = 0L)
+            }
+        }
+    }
+
+    private fun setSelectedMenuItem(title: String) {
+        binding.currentMenuLabel.text = "Selected: $title"
+    }
+
+    private fun updateStatsVisibility() {
+        binding.statsScroll.visibility = if (statsVisible) View.VISIBLE else View.GONE
+        binding.toggleStatsButton.text = if (statsVisible) "Hide Stats" else "Show Stats"
     }
 
     override fun onDestroy() {
@@ -1281,50 +1274,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun testPlutoWebSocketConnection(config: PlutoIqConfig) {
-        binding.sampleText.text = "Testing Pluto WebSocket IQ stream:\nws://${config.plutoWebSocketEndpoint()}${config.plutoWebSocketPath}"
-        decodeExecutor.execute {
-            val report = StringBuilder()
-            report.append("Pluto WebSocket connection test\n")
-            report.append("url: ws://${config.plutoWebSocketEndpoint()}${config.plutoWebSocketPath}\n")
-            report.append("connect_timeout_ms: $PLUTO_WS_CONNECT_TIMEOUT_MS\n")
-            report.append("read_timeout_ms: $PLUTO_WS_READ_TIMEOUT_MS\n\n")
-
-            val selection = findEthernetNetworkWithDiagnostics()
-            report.append(selection.diagnostics)
-            val ethernetNetwork = selection.network
-            if (ethernetNetwork == null || ethernetNetwork.networkHandle == 0L) {
-                report.append("\nTest not executed: no Ethernet network was found.")
-            } else {
-                val transport = PlutoWebSocketTransport.create(
-                    network = ethernetNetwork,
-                    host = config.maiaHost,
-                    port = config.maiaPort,
-                    path = config.plutoWebSocketPath,
-                    connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
-                    readTimeoutMs = PLUTO_WS_READ_TIMEOUT_MS,
-                )
-                val openError = transport.openStream()
-                if (openError != null) {
-                    report.append("\nWebSocket open failed:\n$openError")
-                } else {
-                    val buffer = ByteArray(4096)
-                    val bytesRead = transport.read(buffer, buffer.size)
-                    report.append("\nWebSocket open succeeded.")
-                    report.append("\nfirst_binary_bytes_read: $bytesRead")
-                    if (bytesRead < 0) {
-                        report.append("\nread_error: ${transport.lastError()}")
-                    }
-                }
-                transport.close()
-            }
-
-            mainHandler.post {
-                binding.sampleText.text = report.toString()
-            }
-        }
-    }
-
     private fun preparePlutoWebSocketPlayback(
         standard: VideoStandard,
         config: PlutoIqConfig,
@@ -1352,19 +1301,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
         startPlutoWebSocketSpectrum(config)
-    }
-
-    private fun preparePlutoWebSocketConnectionTest(config: PlutoIqConfig) {
-        if (requestPlutoUsbPermissionForNetworkIfNeeded(
-                action = PlutoUsbAction.WEB_SOCKET_TEST_CONNECTION,
-                standard = VideoStandard.AUTO,
-                config = config,
-                description = "Pluto WebSocket connection test",
-            )
-        ) {
-            return
-        }
-        testPlutoWebSocketConnection(config)
     }
 
     private fun requestPlutoUsbPermissionForNetworkIfNeeded(
@@ -1429,6 +1365,7 @@ class MainActivity : AppCompatActivity() {
                 port = config.maiaPort,
                 path = config.plutoWebSocketPath,
                 sampleRateHz = config.sampleRateHz,
+                receiveBufferMs = config.plutoWebSocketReceiveBufferMs,
                 videoStandard = standard.nativeValue,
                 androidWebSocketTransport = transport,
             )
@@ -1504,6 +1441,7 @@ class MainActivity : AppCompatActivity() {
                 path = config.plutoWebSocketPath,
                 sampleRateHz = config.sampleRateHz,
                 centerFrequencyHz = config.centerFrequencyHz,
+                receiveBufferMs = config.plutoWebSocketReceiveBufferMs,
                 androidWebSocketTransport = transport,
             )
             mainHandler.post {
@@ -1758,6 +1696,7 @@ class MainActivity : AppCompatActivity() {
         dialogBinding.maiaHostInput.setText(config.maiaHost)
         dialogBinding.maiaPortInput.setText(config.maiaPort.toString())
         dialogBinding.plutoWsPathInput.setText(config.plutoWebSocketPath)
+        dialogBinding.plutoWsReceiveBufferInput.setText(config.plutoWebSocketReceiveBufferMs.toString())
         dialogBinding.centerFrequencyInput.setText(config.centerFrequencyHz.toString())
         when (config.sampleFormat) {
             IqSampleFormat.CS16 -> dialogBinding.sampleFormatCs16Radio.isChecked = true
@@ -1793,6 +1732,13 @@ class MainActivity : AppCompatActivity() {
             dialogBinding.plutoWsPathLayout,
             "Pluto WebSocket path",
         )
+        val plutoWebSocketReceiveBufferMs = readBoundedInt(
+            dialogBinding.plutoWsReceiveBufferInput,
+            dialogBinding.plutoWsReceiveBufferLayout,
+            "Pluto WS receive buffer",
+            PLUTO_WS_RECEIVE_BUFFER_MIN_MS,
+            PLUTO_WS_RECEIVE_BUFFER_MAX_MS,
+        )
         val centerFrequencyHz = readPositiveLong(
             dialogBinding.centerFrequencyInput,
             dialogBinding.centerFrequencyLayout,
@@ -1827,6 +1773,7 @@ class MainActivity : AppCompatActivity() {
         if (maiaHost == null ||
             maiaPort == null ||
             plutoWebSocketPath == null ||
+            plutoWebSocketReceiveBufferMs == null ||
             centerFrequencyHz == null ||
             sampleRateHz == null ||
             rfBandwidthHz == null ||
@@ -1841,6 +1788,7 @@ class MainActivity : AppCompatActivity() {
             maiaHost = maiaHost,
             maiaPort = maiaPort,
             plutoWebSocketPath = plutoWebSocketPath,
+            plutoWebSocketReceiveBufferMs = plutoWebSocketReceiveBufferMs,
             sampleFormat = when {
                 dialogBinding.sampleFormatCs8Radio.isChecked -> IqSampleFormat.CS8
                 else -> IqSampleFormat.CS16
@@ -1861,6 +1809,7 @@ class MainActivity : AppCompatActivity() {
         dialogBinding.maiaHostLayout.error = null
         dialogBinding.maiaPortLayout.error = null
         dialogBinding.plutoWsPathLayout.error = null
+        dialogBinding.plutoWsReceiveBufferLayout.error = null
         dialogBinding.centerFrequencyLayout.error = null
         dialogBinding.sampleRateLayout.error = null
         dialogBinding.rfBandwidthLayout.error = null
@@ -1919,6 +1868,25 @@ class MainActivity : AppCompatActivity() {
         }
         if (value !in 1..65535) {
             layout.error = "$label must be between 1 and 65535"
+            return null
+        }
+        return value
+    }
+
+    private fun readBoundedInt(
+        input: TextInputEditText,
+        layout: TextInputLayout,
+        label: String,
+        minValue: Int,
+        maxValue: Int,
+    ): Int? {
+        val value = normalizedNumberText(input).toIntOrNull()
+        if (value == null) {
+            layout.error = "$label must be an integer"
+            return null
+        }
+        if (value !in minValue..maxValue) {
+            layout.error = "$label must be between $minValue and $maxValue"
             return null
         }
         return value
@@ -1989,6 +1957,7 @@ class MainActivity : AppCompatActivity() {
             maiaHost = MAIA_DEFAULT_HOST,
             maiaPort = PLUTO_WS_DEFAULT_PORT,
             plutoWebSocketPath = PLUTO_WS_DEFAULT_PATH,
+            plutoWebSocketReceiveBufferMs = PLUTO_WS_RECEIVE_BUFFER_DEFAULT_MS,
             sampleFormat = IqSampleFormat.CS16,
             sampleRateHz = PLUTO_SAMPLE_RATE_HZ,
             centerFrequencyHz = PLUTO_CENTER_FREQUENCY_HZ,
@@ -2014,6 +1983,10 @@ class MainActivity : AppCompatActivity() {
                 ?.trim()
                 ?.takeIf { it.startsWith("/") && !it.contains(" ") && !it.contains("://") }
                 ?: defaults.plutoWebSocketPath,
+            plutoWebSocketReceiveBufferMs = preferences.getInt(
+                PREF_PLUTO_WS_RECEIVE_BUFFER_MS,
+                defaults.plutoWebSocketReceiveBufferMs,
+            ).coerceIn(PLUTO_WS_RECEIVE_BUFFER_MIN_MS, PLUTO_WS_RECEIVE_BUFFER_MAX_MS),
             sampleFormat = IqSampleFormat.fromMetadataValue(
                 preferences.getString(PREF_SAMPLE_FORMAT, defaults.sampleFormat.metadataValue),
             ),
@@ -2046,6 +2019,7 @@ class MainActivity : AppCompatActivity() {
             .putString(PREF_MAIA_HOST, config.maiaHost)
             .putInt(PREF_PLUTO_WS_PORT, config.maiaPort)
             .putString(PREF_PLUTO_WS_PATH, config.plutoWebSocketPath)
+            .putInt(PREF_PLUTO_WS_RECEIVE_BUFFER_MS, config.plutoWebSocketReceiveBufferMs)
             .putString(PREF_SAMPLE_FORMAT, config.sampleFormat.metadataValue)
             .putLong(PREF_SAMPLE_RATE_HZ, config.sampleRateHz)
             .putLong(PREF_CENTER_FREQUENCY_HZ, config.centerFrequencyHz)
@@ -2187,6 +2161,7 @@ class MainActivity : AppCompatActivity() {
         val maiaHost: String,
         val maiaPort: Int,
         val plutoWebSocketPath: String,
+        val plutoWebSocketReceiveBufferMs: Int,
         val sampleFormat: IqSampleFormat,
         val sampleRateHz: Long,
         val centerFrequencyHz: Long,
@@ -2217,6 +2192,7 @@ class MainActivity : AppCompatActivity() {
         fun toDiagnosticText(): String {
             return buildString {
                 append("pluto_websocket_endpoint: ws://${plutoWebSocketEndpoint()}$plutoWebSocketPath")
+                append("\npluto_ws_receive_buffer_ms: $plutoWebSocketReceiveBufferMs")
                 append("\nformat: ${sampleFormat.metadataValue}")
                 append("\nsample_rate_hz: $sampleRateHz")
                 append("\ncenter_frequency_hz: $centerFrequencyHz")
@@ -2258,7 +2234,6 @@ class MainActivity : AppCompatActivity() {
         SPECTRUM_VIEW,
         WEB_SOCKET_PLAYBACK,
         WEB_SOCKET_SPECTRUM,
-        WEB_SOCKET_TEST_CONNECTION,
     }
 
     /**
@@ -2408,6 +2383,7 @@ class MainActivity : AppCompatActivity() {
         port: Int,
         path: String,
         sampleRateHz: Long,
+        receiveBufferMs: Int,
         videoStandard: Int,
         androidWebSocketTransport: PlutoWebSocketTransport,
     ): Long
@@ -2421,6 +2397,7 @@ class MainActivity : AppCompatActivity() {
         path: String,
         sampleRateHz: Long,
         centerFrequencyHz: Long,
+        receiveBufferMs: Int,
         androidWebSocketTransport: PlutoWebSocketTransport,
     ): Long
 
@@ -2457,6 +2434,16 @@ class MainActivity : AppCompatActivity() {
         private const val MAIA_TEST_RESPONSE_LIMIT_BYTES = 64 * 1024
         private const val PLUTO_WS_CONNECT_TIMEOUT_MS = 3000
         private const val PLUTO_WS_READ_TIMEOUT_MS = 3000
+        private const val PLUTO_WS_RECEIVE_BUFFER_MIN_MS = 50
+        private const val PLUTO_WS_RECEIVE_BUFFER_MAX_MS = 150
+        private const val PLUTO_WS_RECEIVE_BUFFER_DEFAULT_MS = 120
+        private const val MENU_PLAY_PLUTO_WS_CS8 = 1
+        private const val MENU_STOP = 2
+        private const val MENU_SETUP_IQ = 3
+        private const val MENU_RECORD_IQ = 4
+        private const val MENU_PLUTO_WS_FFT = 5
+        private const val MENU_PLAY_AUTO_FILE = 6
+        private const val MENU_DECODE_AUTO_FILE = 7
         private const val ACTION_USB_PERMISSION = "com.example.sdrvideoscanner.USB_PERMISSION"
         private const val PLUTO_USB_VENDOR_ID = 0x0456
         private const val PLUTO_USB_PRODUCT_ID = 0xb673
@@ -2477,6 +2464,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_MAIA_HOST = "maia_host"
         private const val PREF_PLUTO_WS_PORT = "pluto_ws_port"
         private const val PREF_PLUTO_WS_PATH = "pluto_ws_path"
+        private const val PREF_PLUTO_WS_RECEIVE_BUFFER_MS = "pluto_ws_receive_buffer_ms"
         private const val PREF_SAMPLE_FORMAT = "sample_format"
         private const val PREF_SAMPLE_RATE_HZ = "sample_rate_hz"
         private const val PREF_CENTER_FREQUENCY_HZ = "center_frequency_hz"

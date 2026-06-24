@@ -71,6 +71,23 @@
                 android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/pluto_ws_receive_buffer_layout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="Pluto WS receive buffer ms"
+            app:helperText="Low latency buffer: 50...150 ms">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/pluto_ws_receive_buffer_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:selectAllOnFocus="true"
+                android:singleLine="true" />
+        </com.google.android.material.textfield.TextInputLayout>
+
         <TextView
             android:id="@+id/sample_format_label"
             android:layout_width="match_parent"

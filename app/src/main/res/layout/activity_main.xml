@@ -11,154 +11,34 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:visibility="gone">
-
-        <Button
-            android:id="@+id/diagnose_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1"
-            android:text="Diagnose CS16 blocks" />
-
-        <Button
-            android:id="@+id/spectrum_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Analyze spectrum" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:visibility="gone">
-
-        <Button
-            android:id="@+id/decode_frame_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1"
-            android:text="Decode AUTO" />
-
-        <Button
-            android:id="@+id/decode_pal_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Decode PAL625" />
-    </LinearLayout>
-
-    <Button
-        android:id="@+id/decode_ntsc_button"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Decode NTSC525"
-        android:visibility="gone" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
 
         <Button
-            android:id="@+id/setup_iq_button"
-            android:layout_width="0dp"
+            android:id="@+id/main_menu_button"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginEnd="4dp"
-            android:layout_weight="1"
-            android:text="Setup IQ" />
+            android:text="Main Menu" />
 
-        <Button
-            android:id="@+id/record_iq_button"
+        <TextView
+            android:id="@+id/current_menu_label"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Record IQ" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/capture_pluto_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
-            android:text="Play Pluto USB" />
+            android:singleLine="true"
+            android:text="Selected: Pluto WS CS8"
+            android:textSize="16sp" />
 
         <Button
-            android:id="@+id/stop_playback_button"
-            android:layout_width="0dp"
+            android:id="@+id/toggle_stats_button"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Stop" />
+            android:text="Hide Stats" />
     </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/spectrum_view_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1"
-            android:text="FFT / Waterfall" />
-
-        <Button
-            android:id="@+id/play_auto_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Play AUTO file" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/play_maia_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="4dp"
-            android:layout_weight="1"
-            android:text="Play Pluto WS CS8" />
-
-        <Button
-            android:id="@+id/maia_spectrum_button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_weight="1"
-            android:text="Pluto WS FFT" />
-    </LinearLayout>
-
-    <Button
-        android:id="@+id/test_maia_connection_button"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Test Pluto WS Connection" />
 
     <ImageView
         android:id="@+id/video_frame_image"
@@ -172,6 +52,7 @@
         android:scaleType="fitCenter" />
 
     <ScrollView
+        android:id="@+id/stats_scroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="12dp"
