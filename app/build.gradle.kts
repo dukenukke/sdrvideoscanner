@@ -21,7 +21,15 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DSDRVIDEOSCANNER_REQUIRE_LIBIIO=ON",
+                    "-DSDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR=${projectDir}/src/main/cpp/third_party/libiio/include",
+                    "-DSDRVIDEOSCANNER_LIBIIO_LIBRARY=${projectDir}/src/main/jniLibs/arm64-v8a/libiio.so",
+                )
             }
+        }
+        ndk {
+            abiFilters += "arm64-v8a"
         }
     }
 

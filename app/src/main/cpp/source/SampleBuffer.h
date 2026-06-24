@@ -8,8 +8,10 @@ namespace sdr {
 
 class SampleBuffer {
 public:
+    static constexpr std::size_t kValuesPerIqSample = 2;
+
     void resizeSamples(std::size_t iqPairCount) {
-        interleavedIq_.resize(iqPairCount * kValuesPerIqPair);
+        interleavedIq_.resize(iqPairCount * kValuesPerIqSample);
     }
 
     void clear() {
@@ -17,7 +19,7 @@ public:
     }
 
     std::size_t sampleCount() const {
-        return interleavedIq_.size() / kValuesPerIqPair;
+        return interleavedIq_.size() / kValuesPerIqSample;
     }
 
     std::size_t valueCount() const {
@@ -32,9 +34,15 @@ public:
         return interleavedIq_.data();
     }
 
-private:
-    static constexpr std::size_t kValuesPerIqPair = 2;
+    std::int16_t i(std::size_t sampleIndex) const {
+        return interleavedIq_[sampleIndex * kValuesPerIqSample];
+    }
 
+    std::int16_t q(std::size_t sampleIndex) const {
+        return interleavedIq_[sampleIndex * kValuesPerIqSample + 1];
+    }
+
+private:
     std::vector<std::int16_t> interleavedIq_;
 };
 

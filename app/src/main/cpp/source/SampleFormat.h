@@ -5,7 +5,8 @@
 namespace sdr {
 
 enum class SampleEncoding {
-    Cs16
+    Cs16,
+    Cs8
 };
 
 struct SampleFormat {

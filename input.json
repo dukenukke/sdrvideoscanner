@@ -1,0 +1,11 @@
+{
+  "format": "CS16",
+  "endianness": "little",
+  "sample_rate_hz": 25000000,
+  "center_frequency_hz": 5885000000,
+  "rf_bandwidth_hz": 20000000,
+  "gain_db": 40,
+  "source": "video_decoder_c",
+  "device": "PlutoSDR",
+  "duration_sec": 5
+}
