@@ -274,20 +274,41 @@ namespace sdr {
         const auto sampleSize = iio_device_get_sample_size(impl_->rx, impl_->channelsMask);
         impl_->sampleStrideBytes = static_cast<std::size_t>(sampleSize);
 
-        const auto bufferSamples = std::max<std::size_t>(8192U, config_.bufferSamples);
+        const auto bufferSamples = std::max<std::size_t>(1024U, config_.bufferSamples);
+        const auto streamBlockCount = std::max<std::size_t>(1U, config_.streamBlockCount);
         impl_->rxBuffer = iio_device_get_buffer(impl_->rx, 0);   // Original style
-        if (!impl_->rxBuffer) {
+        const auto bufferError = iio_err(impl_->rxBuffer);
+        if (!impl_->rxBuffer || bufferError != 0) {
+            impl_->rxBuffer = nullptr;
             close();
-            return makeStatus(SampleSourceError::OpenFailed, "iio_device_get_buffer failed");
+            return makeStatus(
+                    SampleSourceError::OpenFailed,
+                    "iio_device_get_buffer failed: " +
+                            (bufferError == 0 ? std::string("unknown error")
+                                              : iioErrorMessage(bufferError)));
         }
 
-        impl_->stream = iio_buffer_create_stream(impl_->rxBuffer, 4, bufferSamples, impl_->channelsMask);
-        if (!impl_->stream) {
+        impl_->stream = iio_buffer_create_stream(
+                impl_->rxBuffer,
+                streamBlockCount,
+                bufferSamples,
+                impl_->channelsMask);
+        const auto streamError = iio_err(impl_->stream);
+        if (!impl_->stream || streamError != 0) {
+            impl_->stream = nullptr;
             close();
-            return makeStatus(SampleSourceError::OpenFailed, "iio_buffer_create_stream failed");
+            return makeStatus(
+                    SampleSourceError::OpenFailed,
+                    "iio_buffer_create_stream failed: " +
+                            (streamError == 0 ? std::string("unknown error")
+                                              : iioErrorMessage(streamError)));
         }
 
-        return makeStatus(SampleSourceError::None, "Opened (CS" + std::to_string(useEightBitSamples ? 8 : 16) + ")");
+        std::ostringstream message;
+        message << "Opened (CS" << (useEightBitSamples ? 8 : 16)
+                << ", buffer_samples=" << bufferSamples
+                << ", stream_blocks=" << streamBlockCount << ")";
+        return makeStatus(SampleSourceError::None, message.str());
 #endif
     }
 
@@ -335,8 +356,15 @@ namespace sdr {
         }
 
         const auto* block = iio_stream_get_next_block(impl_->stream);
-        if (!block) {
-            return makeReadResult(0, false, SampleSourceError::ReadFailed, "iio_stream_get_next_block failed");
+        const auto blockError = iio_err(block);
+        if (!block || blockError != 0) {
+            return makeReadResult(
+                    0,
+                    false,
+                    SampleSourceError::ReadFailed,
+                    "iio_stream_get_next_block failed: " +
+                            (blockError == 0 ? std::string("unknown error")
+                                             : iioErrorMessage(blockError)));
         }
 
         const auto* ptr = static_cast<const char*>(iio_block_first(block, impl_->rxI));

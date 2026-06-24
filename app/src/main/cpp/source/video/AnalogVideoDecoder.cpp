@@ -1,12 +1,54 @@
 #include "AnalogVideoDecoder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
 namespace sdr {
 namespace {
+
+using DecodeClock = std::chrono::steady_clock;
+
+struct DecodeStageTimings {
+    double sourceReadMs = 0.0;
+    double demodMs = 0.0;
+    double meanMs = 0.0;
+    double lowPassMs = 0.0;
+    double normalizeMs = 0.0;
+    double syncMs = 0.0;
+    double assembleMs = 0.0;
+    double totalMs = 0.0;
+};
+
+double elapsedMs(DecodeClock::time_point start, DecodeClock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string timingDiagnostic(
+        const DecodeStageTimings& timings,
+        std::size_t sourceSamplesRead,
+        std::size_t videoSampleCount,
+        std::size_t decimation,
+        std::uint64_t videoSampleRateHz) {
+    std::ostringstream message;
+    message << std::fixed << std::setprecision(2)
+            << "; timing_total_ms=" << timings.totalMs
+            << "; timing_source_read_ms=" << timings.sourceReadMs
+            << "; timing_fm_demod_ms=" << timings.demodMs
+            << "; timing_mean_ms=" << timings.meanMs
+            << "; timing_lowpass_ms=" << timings.lowPassMs
+            << "; timing_normalize_ms=" << timings.normalizeMs
+            << "; timing_sync_ms=" << timings.syncMs
+            << "; timing_assemble_ms=" << timings.assembleMs
+            << "; timing_source_samples=" << sourceSamplesRead
+            << "; timing_video_samples=" << videoSampleCount
+            << "; timing_decimation=" << decimation
+            << "; timing_video_sample_rate_hz=" << videoSampleRateHz;
+    return message.str();
+}
 
 void subtractMean(std::vector<float>& samples) {
     if (samples.empty()) {
@@ -43,6 +85,8 @@ AnalogVideoDecoder::AnalogVideoDecoder(AnalogVideoDecoderConfig config)
           frameAssembler_(config.timing) {}
 
 VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
+    const auto decodeStart = DecodeClock::now();
+    DecodeStageTimings timings;
     VideoFrame errorFrame;
     if (config_.sampleRateHz == 0) {
         errorFrame.message = "sample_rate_hz metadata is required";
@@ -65,9 +109,19 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
     std::size_t sourceSamplesRead = 0;
     while (sourceSamplesRead < targetSamples) {
         const auto samplesToRead = std::min(config_.readBlockSamples, targetSamples - sourceSamplesRead);
+        const auto readStart = DecodeClock::now();
         const auto readResult = source.read(sampleBuffer_, samplesToRead);
+        const auto readEnd = DecodeClock::now();
+        timings.sourceReadMs += elapsedMs(readStart, readEnd);
         if (!readResult.ok()) {
-            errorFrame.message = readResult.message;
+            timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
+            errorFrame.message = readResult.message +
+                    timingDiagnostic(
+                            timings,
+                            sourceSamplesRead,
+                            videoBaseband_.size(),
+                            decimation,
+                            videoSampleRateHz);
             return errorFrame;
         }
 
@@ -75,11 +129,13 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             break;
         }
 
+        const auto demodStart = DecodeClock::now();
         fmDemodulator_.appendDecimatedDiscriminator(
                 sampleBuffer_,
                 readResult.samplesRead,
                 decimation,
                 videoBaseband_);
+        timings.demodMs += elapsedMs(demodStart, DecodeClock::now());
         sourceSamplesRead += readResult.samplesRead;
         if (readResult.endOfStream) {
             break;
@@ -87,13 +143,24 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
     }
 
     if (videoBaseband_.empty()) {
-        errorFrame.message = "input file did not contain complete IQ samples";
+        timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
+        errorFrame.message = "input did not contain complete IQ samples" +
+                timingDiagnostic(
+                        timings,
+                        sourceSamplesRead,
+                        videoBaseband_.size(),
+                        decimation,
+                        videoSampleRateHz);
         return errorFrame;
     }
 
+    const auto meanStart = DecodeClock::now();
     subtractMean(videoBaseband_);
+    timings.meanMs = elapsedMs(meanStart, DecodeClock::now());
 
+    const auto normalizeStart = DecodeClock::now();
     normalizer_.normalize(videoBaseband_, video_);
+    timings.normalizeMs = elapsedMs(normalizeStart, DecodeClock::now());
 
     const auto maxSyncs = config_.fastFieldPreview
             ? (std::max<std::size_t>(
@@ -103,6 +170,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                                     2U +
                             64U))
             : (static_cast<std::size_t>(config_.timing.totalLines) * 2U);
+    const auto syncStart = DecodeClock::now();
     const auto syncDetection = config_.fastFieldPreview && !config_.detectFrameSyncInFastPreview
             ? syncDetector_.detectHorizontalSyncsFast(
                     video_,
@@ -114,6 +182,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     videoSampleRateHz,
                     config_.timing.lineRateHz,
                     maxSyncs);
+    timings.syncMs = elapsedMs(syncStart, DecodeClock::now());
 
     if (syncDetection.syncIsHigh) {
         for (auto& sample : video_) {
@@ -131,6 +200,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
     if (syncDetection.syncStarts.size() >= minimumUsefulSyncs) {
         std::size_t fastFieldStartSyncIndex = 0;
         std::size_t fastFieldCandidateStartSyncIndex = 0;
+        const auto assembleStart = DecodeClock::now();
         auto frame = config_.fastFieldPreview
                 ? [&]() {
                     const auto candidateStartSyncIndex =
@@ -155,6 +225,8 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                         syncDetection.syncStarts,
                         syncDetection.frameSyncEdges,
                         videoSampleRateHz);
+        timings.assembleMs = elapsedMs(assembleStart, DecodeClock::now());
+        timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
         frame.syncIsHigh = syncDetection.syncIsHigh;
         frame.syncThreshold = syncDetection.threshold;
         frame.detectedFrameSyncCount = syncDetection.frameSyncEdges.size();
@@ -176,14 +248,23 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     << "; field_start_locked=" << (fastFieldStartLocked_ ? "yes" : "no")
                     << "; field_stride=" << std::max<std::size_t>(1U, config_.fastPreviewFieldStride);
         }
+        message << timingDiagnostic(
+                timings,
+                sourceSamplesRead,
+                videoBaseband_.size(),
+                decimation,
+                videoSampleRateHz);
         frame.message = message.str();
         return frame;
     }
 
+    const auto assembleStart = DecodeClock::now();
     auto frame = frameAssembler_.assembleRawRaster(
             video_,
             videoSampleRateHz,
             syncDetection.syncStarts.size());
+    timings.assembleMs = elapsedMs(assembleStart, DecodeClock::now());
+    timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
     frame.syncIsHigh = syncDetection.syncIsHigh;
     frame.syncThreshold = syncDetection.threshold;
     frame.detectedFrameSyncCount = syncDetection.frameSyncEdges.size();
@@ -199,6 +280,12 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
             << "; sync_score=" << syncDetection.score
             << "; line_stability=" << syncDetection.lineStabilityScore;
+    message << timingDiagnostic(
+            timings,
+            sourceSamplesRead,
+            videoBaseband_.size(),
+            decimation,
+            videoSampleRateHz);
     frame.message = message.str();
     return frame;
 }

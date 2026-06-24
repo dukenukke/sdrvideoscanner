@@ -544,8 +544,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (frame == null) {
                     stopPlayback()
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
                     binding.sampleText.text = metadata.toDiagnosticText() +
-                        "\n\nPlayback stopped: decoder returned no frame at index $frameIndex"
+                        "\n\nPlayback stopped: decoder returned no frame at index $frameIndex\n\n" +
+                        "native_error: $nativeError"
                     return@post
                 }
 

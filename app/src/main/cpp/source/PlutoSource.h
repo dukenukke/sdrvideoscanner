@@ -20,7 +20,8 @@ struct PlutoSourceConfig {
     bool hardwareIqCorrection = true;
     bool hardwareBbdcCorrection = true;
     bool hardwareRfdcCorrection = true;
-    std::size_t bufferSamples = 32768;
+    std::size_t bufferSamples = 4096;
+    std::size_t streamBlockCount = 4;
 };
 
 class PlutoSource final : public ISampleSource {

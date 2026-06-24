@@ -169,17 +169,37 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
                 if (availableA == 0U || availableB == 0U) {
                     continue;
                 }
-                for (std::uint32_t x = 0; x < frame.width; ++x) {
-                    const auto sourceOffsetA =
-                            (static_cast<std::uint64_t>(x) * static_cast<std::uint64_t>(availableA)) /
-                            static_cast<std::uint64_t>(frame.width);
-                    const auto sourceOffsetB =
-                            (static_cast<std::uint64_t>(x) * static_cast<std::uint64_t>(availableB)) /
-                            static_cast<std::uint64_t>(frame.width);
-                    output[x] = static_cast<std::uint8_t>(
-                            (static_cast<unsigned>(video[lineStart + static_cast<std::size_t>(sourceOffsetA)]) +
-                             static_cast<unsigned>(video[nextLineStart + static_cast<std::size_t>(sourceOffsetB)])) /
+                if (frame.width == 1U || availableA == 1U || availableB == 1U) {
+                    const auto value = static_cast<std::uint8_t>(
+                            (static_cast<unsigned>(video[lineStart]) +
+                             static_cast<unsigned>(video[nextLineStart])) /
                             2U);
+                    std::fill(output, output + frame.width, value);
+                    continue;
+                }
+                const double scaleA = static_cast<double>(availableA - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                const double scaleB = static_cast<double>(availableB - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                for (std::uint32_t x = 0; x < frame.width; ++x) {
+                    const double sourcePositionA = static_cast<double>(x) * scaleA;
+                    const auto leftA = static_cast<std::size_t>(sourcePositionA);
+                    const auto rightA = std::min<std::size_t>(leftA + 1U, availableA - 1U);
+                    const double fractionA = sourcePositionA - static_cast<double>(leftA);
+                    const double valueA =
+                            (static_cast<double>(video[lineStart + leftA]) * (1.0 - fractionA)) +
+                            (static_cast<double>(video[lineStart + rightA]) * fractionA);
+
+                    const double sourcePositionB = static_cast<double>(x) * scaleB;
+                    const auto leftB = static_cast<std::size_t>(sourcePositionB);
+                    const auto rightB = std::min<std::size_t>(leftB + 1U, availableB - 1U);
+                    const double fractionB = sourcePositionB - static_cast<double>(leftB);
+                    const double valueB =
+                            (static_cast<double>(video[nextLineStart + leftB]) * (1.0 - fractionB)) +
+                            (static_cast<double>(video[nextLineStart + rightB]) * fractionB);
+
+                    output[x] = static_cast<std::uint8_t>(
+                            std::clamp((valueA + valueB) * 0.5, 0.0, 255.0) + 0.5);
                 }
             }
             continue;
@@ -917,11 +937,24 @@ void FrameAssembler::copyResampledLine(
 
     const auto available = std::min(sourceLength, video.size() - sourceStart);
     auto* output = frame.pixels.data() + (static_cast<std::size_t>(outputLine) * frame.width);
+    if (frame.width == 1U || available == 1U) {
+        const auto value = video[sourceStart];
+        std::fill(output, output + frame.width, value);
+        return;
+    }
+
+    const double scale = static_cast<double>(available - 1U) /
+            static_cast<double>(frame.width - 1U);
     for (std::uint32_t x = 0; x < frame.width; ++x) {
-        const auto sourceOffset =
-                (static_cast<std::uint64_t>(x) * static_cast<std::uint64_t>(available)) /
-                static_cast<std::uint64_t>(frame.width);
-        output[x] = video[sourceStart + static_cast<std::size_t>(sourceOffset)];
+        const double sourcePosition = static_cast<double>(x) * scale;
+        const auto left = static_cast<std::size_t>(sourcePosition);
+        const auto right = std::min<std::size_t>(left + 1U, available - 1U);
+        const double fraction = sourcePosition - static_cast<double>(left);
+        const double value =
+                (static_cast<double>(video[sourceStart + left]) * (1.0 - fraction)) +
+                (static_cast<double>(video[sourceStart + right]) * fraction);
+        output[x] = static_cast<std::uint8_t>(
+                std::clamp(value, 0.0, 255.0) + 0.5);
     }
 }
 

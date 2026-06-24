@@ -33,6 +33,17 @@
 namespace {
 
 constexpr std::size_t kDiagnosticBlockSamples = 4096;
+constexpr std::size_t kFilePlaybackReadBlockSamples = 262144;
+constexpr std::size_t kLivePlaybackReadBlockSamples = 32768;
+constexpr std::size_t kPlutoLivePlaybackBufferSamples = 32768;
+constexpr std::size_t kPlutoLiveSpectrumBufferSamples = 1024;
+constexpr std::size_t kPlutoLiveStreamBlockCount = 4;
+constexpr std::size_t kPlutoCaptureBufferSamples = 32768;
+constexpr std::size_t kPlutoCaptureStreamBlockCount = 4;
+constexpr std::uint64_t kDefaultPlaybackAnalysisRateHz = 1500000;
+constexpr std::uint64_t kWebSocketCs8PlaybackAnalysisRateHz = 5000000;
+constexpr double kDefaultPlaybackVideoCutoffHz = 5000000.0;
+constexpr double kWebSocketCs8PlaybackVideoCutoffHz = 2200000.0;
 constexpr double kCs16FullScale = 32768.0;
 
 std::mutex gLastNativeErrorMutex;
@@ -123,6 +134,10 @@ const char* sampleEncodingName(sdr::SampleEncoding encoding) {
         return "CS8";
     }
     return "CS16";
+}
+
+bool isLivePlaybackSourceKind(const std::string& sessionKind) {
+    return sessionKind != "file";
 }
 
 std::string errorDiagnostic(const std::string& path, const std::string& message) {
@@ -775,8 +790,16 @@ double playbackFrameRateForStandard(sdr::VideoStandard standard) {
 void configurePlaybackDecoder(AnalogPlaybackSession& session) {
     sdr::AnalogVideoDecoderConfig config;
     config.sampleRateHz = session.sampleRateHz;
-    config.analysisRateHz = 1500000;
-    config.readBlockSamples = 262144;
+    const bool isWebSocketCs8Live = session.sessionKind == "pluto_websocket_cs8_live";
+    config.analysisRateHz = isWebSocketCs8Live
+            ? kWebSocketCs8PlaybackAnalysisRateHz
+            : kDefaultPlaybackAnalysisRateHz;
+    config.cutoffHz = isWebSocketCs8Live
+            ? kWebSocketCs8PlaybackVideoCutoffHz
+            : kDefaultPlaybackVideoCutoffHz;
+    config.readBlockSamples = isLivePlaybackSourceKind(session.sessionKind)
+            ? kLivePlaybackReadBlockSamples
+            : kFilePlaybackReadBlockSamples;
     config.fastFieldPreview = true;
     config.detectFrameSyncInFastPreview = true;
     config.fastPreviewFieldStride = 2;
@@ -970,7 +993,8 @@ AnalogPlaybackSession* createPlutoPlaybackSession(
     config.hardwareIqCorrection = hardwareIqCorrection;
     config.hardwareBbdcCorrection = hardwareBbdcCorrection;
     config.hardwareRfdcCorrection = hardwareRfdcCorrection;
-    config.bufferSamples = 32768;
+    config.bufferSamples = kPlutoLivePlaybackBufferSamples;
+    config.streamBlockCount = kPlutoLiveStreamBlockCount;
 
     auto source = std::make_unique<sdr::PlutoSource>(config);
     const auto openStatus = source->open();
@@ -1018,7 +1042,8 @@ SpectrumViewSession* createPlutoSpectrumSession(
     config.hardwareIqCorrection = hardwareIqCorrection;
     config.hardwareBbdcCorrection = hardwareBbdcCorrection;
     config.hardwareRfdcCorrection = hardwareRfdcCorrection;
-    config.bufferSamples = 32768;
+    config.bufferSamples = kPlutoLiveSpectrumBufferSamples;
+    config.streamBlockCount = kPlutoLiveStreamBlockCount;
 
     auto source = std::make_unique<sdr::PlutoSource>(config);
     const auto openStatus = source->open();
@@ -1307,6 +1332,15 @@ sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
         }
         frame.message = message.str();
         ++session.frameIndex;
+    } else {
+        std::ostringstream message;
+        message << "decoder returned invalid frame"
+                << "; playback_source=" << session.sessionKind
+                << "; playback_frame_index=" << session.frameIndex;
+        if (!frame.message.empty()) {
+            message << "; decoder_error=" << frame.message;
+        }
+        setLastNativeError(message.str());
     }
     return frame;
 }
@@ -1354,7 +1388,8 @@ std::string capturePlutoIqToFile(
     config.hardwareIqCorrection = hardwareIqCorrection;
     config.hardwareBbdcCorrection = hardwareBbdcCorrection;
     config.hardwareRfdcCorrection = hardwareRfdcCorrection;
-    config.bufferSamples = 32768;
+    config.bufferSamples = kPlutoCaptureBufferSamples;
+    config.streamBlockCount = kPlutoCaptureStreamBlockCount;
 
     sdr::PlutoSource source(config);
     const auto openStatus = source.open();
