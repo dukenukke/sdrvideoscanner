@@ -133,27 +133,6 @@ double stddevFloat(const std::vector<float>& values, double mean) {
     return std::sqrt(sumSquares / static_cast<double>(values.size()));
 }
 
-double peakProminence(
-        const std::vector<float>& values,
-        std::size_t peakIndex,
-        std::size_t window) {
-    const float peak = values[peakIndex];
-    float leftMin = peak;
-    float rightMin = peak;
-
-    const auto leftStart = peakIndex > window ? peakIndex - window : 0U;
-    for (std::size_t index = peakIndex; index > leftStart; --index) {
-        leftMin = std::min(leftMin, values[index - 1U]);
-    }
-
-    const auto rightEnd = std::min(values.size(), peakIndex + window + 1U);
-    for (std::size_t index = peakIndex + 1U; index < rightEnd; ++index) {
-        rightMin = std::min(rightMin, values[index]);
-    }
-
-    return static_cast<double>(peak - std::max(leftMin, rightMin));
-}
-
 std::vector<std::size_t> detectFrameSyncEdges(
         const std::vector<std::uint8_t>& video,
         std::uint64_t sampleRateHz) {
@@ -186,23 +165,37 @@ std::vector<std::size_t> detectFrameSyncEdges(
     const auto minDistance = samplesForSeconds(sampleRateHz, 0.012);
     std::size_t lastKept = 0;
     bool hasLast = false;
-    for (std::size_t index = 1; index + 1 < sync.size(); ++index) {
-        if (!(sync[index] >= 0.8F && sync[index] >= sync[index - 1U] && sync[index] >= sync[index + 1U])) {
+    std::size_t index = 1;
+    while (index + 1U < sync.size()) {
+        if (sync[index] < 0.8F) {
+            ++index;
             continue;
         }
-        if (peakProminence(sync, index, std::max<std::size_t>(8U, minDistance * 2U)) < 1.2) {
+
+        const auto runStart = index;
+        auto peakIndex = index;
+        auto peakValue = sync[index];
+        while (index + 1U < sync.size() && sync[index] >= 0.8F) {
+            if (sync[index] > peakValue) {
+                peakValue = sync[index];
+                peakIndex = index;
+            }
+            ++index;
+        }
+
+        if (peakValue < 1.2F) {
             continue;
         }
-        if (hasLast && index < lastKept + minDistance) {
-            if (!edges.empty() && sync[lastKept] < sync[index]) {
+        if (hasLast && peakIndex < lastKept + minDistance) {
+            if (!edges.empty() && sync[lastKept] < peakValue) {
                 edges.pop_back();
             } else {
                 continue;
             }
         }
 
-        const float threshold = sync[index] * 0.45F;
-        auto edge = index;
+        const float threshold = peakValue * 0.45F;
+        auto edge = peakIndex;
         const auto limit = edge > samplesForSeconds(sampleRateHz, 0.006)
                 ? edge - samplesForSeconds(sampleRateHz, 0.006)
                 : 0U;
@@ -210,8 +203,12 @@ std::vector<std::size_t> detectFrameSyncEdges(
             --edge;
         }
         edges.push_back(edge);
-        lastKept = index;
+        lastKept = peakIndex;
         hasLast = true;
+
+        if (index == runStart) {
+            ++index;
+        }
     }
 
     return edges;
