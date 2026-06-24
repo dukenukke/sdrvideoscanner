@@ -52,7 +52,7 @@
 
 The architecture shall allow adding new sample sources without modifying the decoder, including:
 
-* PlutoSDR (libiio)
+* PlutoSDR (libiio/libusb)
 * RTL-SDR
 * HackRF
 * LimeSDR

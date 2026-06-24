@@ -11,6 +11,28 @@ cmake_minimum_required(VERSION 3.22.1)
 # build script scope).
 project("sdrvideoscanner")
 
+set(SDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR "" CACHE PATH "Android libiio include directory")
+set(SDRVIDEOSCANNER_LIBIIO_LIBRARY "" CACHE FILEPATH "Android libiio shared/static library")
+option(SDRVIDEOSCANNER_REQUIRE_LIBIIO "Fail the build if Android libiio is not available" OFF)
+
+set(SDRVIDEOSCANNER_ANDROID_ABI "${ANDROID_ABI}")
+if(NOT SDRVIDEOSCANNER_ANDROID_ABI)
+    set(SDRVIDEOSCANNER_ANDROID_ABI "${CMAKE_ANDROID_ARCH_ABI}")
+endif()
+
+set(SDRVIDEOSCANNER_DEFAULT_LIBIIO_INCLUDE_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libiio/include")
+set(SDRVIDEOSCANNER_DEFAULT_LIBIIO_LIBRARY
+        "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${SDRVIDEOSCANNER_ANDROID_ABI}/libiio.so")
+
+if(NOT SDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR AND EXISTS "${SDRVIDEOSCANNER_DEFAULT_LIBIIO_INCLUDE_DIR}")
+    set(SDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR "${SDRVIDEOSCANNER_DEFAULT_LIBIIO_INCLUDE_DIR}")
+endif()
+
+if(NOT SDRVIDEOSCANNER_LIBIIO_LIBRARY AND EXISTS "${SDRVIDEOSCANNER_DEFAULT_LIBIIO_LIBRARY}")
+    set(SDRVIDEOSCANNER_LIBIIO_LIBRARY "${SDRVIDEOSCANNER_DEFAULT_LIBIIO_LIBRARY}")
+endif()
+
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
 # You can define multiple libraries, and CMake builds them for you.
@@ -27,6 +49,9 @@ project("sdrvideoscanner")
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         native-lib.cpp
+        source/MaiaSource.cpp
+        source/PlutoSource.cpp
+        source/PlutoWebSocketSource.cpp
         source/analyzer/SpectrumAnalyzer.cpp
         source/file/FileSource.cpp
         source/video/AmDemodulator.cpp
@@ -45,6 +70,24 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR})
+
+if(SDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR AND SDRVIDEOSCANNER_LIBIIO_LIBRARY)
+    add_library(libiio_prebuilt SHARED IMPORTED)
+    set_target_properties(libiio_prebuilt PROPERTIES
+            IMPORTED_LOCATION "${SDRVIDEOSCANNER_LIBIIO_LIBRARY}")
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE SDRVIDEOSCANNER_HAVE_LIBIIO)
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${SDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR})
+    target_link_libraries(${CMAKE_PROJECT_NAME} libiio_prebuilt)
+    message(STATUS "Pluto capture enabled with libiio: ${SDRVIDEOSCANNER_LIBIIO_LIBRARY}")
+elseif(SDRVIDEOSCANNER_REQUIRE_LIBIIO)
+    message(FATAL_ERROR
+            "Pluto capture requires Android libiio. Put headers in "
+            "app/src/main/cpp/third_party/libiio/include and libiio.so in "
+            "app/src/main/jniLibs/${SDRVIDEOSCANNER_ANDROID_ABI}/, or pass "
+            "-DSDRVIDEOSCANNER_LIBIIO_INCLUDE_DIR and -DSDRVIDEOSCANNER_LIBIIO_LIBRARY.")
+else()
+    message(STATUS "Pluto capture disabled: Android libiio was not found")
+endif()
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this

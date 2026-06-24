@@ -1,34 +1,87 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "source/IQMetadata.h"
+#include "source/ISampleSource.h"
+#include "source/MaiaSource.h"
+#include "source/PlutoSource.h"
+#include "source/PlutoWebSocketSource.h"
 #include "source/analyzer/SpectrumAnalyzer.h"
 #include "source/file/FileSource.h"
 #include "source/video/AnalogVideoDecoder.h"
 
+#ifdef SDRVIDEOSCANNER_HAVE_LIBIIO
+#if __has_include(<iio/iio.h>)
+#include <iio/iio.h>
+#else
+#include <iio.h>
+#endif
+#endif
+
 namespace {
 
 constexpr std::size_t kDiagnosticBlockSamples = 4096;
-constexpr std::uint64_t kBytesPerIqSample = sizeof(std::int16_t) * 2;
 constexpr double kCs16FullScale = 32768.0;
 
+std::mutex gLastNativeErrorMutex;
+std::string gLastNativeError;
+
+void setLastNativeError(std::string message) {
+    std::lock_guard<std::mutex> lock(gLastNativeErrorMutex);
+    gLastNativeError = std::move(message);
+}
+
+std::string consumeLastNativeError() {
+    std::lock_guard<std::mutex> lock(gLastNativeErrorMutex);
+    auto message = gLastNativeError;
+    gLastNativeError.clear();
+    return message;
+}
+
 struct AnalogPlaybackSession {
-    std::unique_ptr<sdr::FileSource> source;
+    std::unique_ptr<sdr::ISampleSource> source;
     std::unique_ptr<sdr::AnalogVideoDecoder> decoder;
     std::uint64_t sampleRateHz = 0;
     sdr::VideoStandard standard = sdr::VideoStandard::NTSC_525_30FPS;
     double playbackFrameRateHz = 0.0;
     std::uint64_t frameIndex = 0;
     std::uint64_t totalSampleCount = 0;
+    bool loopAtEndOfStream = false;
+    std::string sessionKind = "unknown";
+};
+
+struct SpectrumViewSession {
+    explicit SpectrumViewSession(std::size_t fftSize)
+            : analyzer(fftSize),
+              waterfallPixels(waterfallWidth * waterfallHeight, 0),
+              spectrumBinsDbfs(fftSize) {}
+
+    std::unique_ptr<sdr::ISampleSource> source;
+    sdr::SpectrumAnalyzer analyzer;
+    sdr::SampleBuffer buffer;
+    std::vector<float> spectrumBinsDbfs;
+    std::vector<std::uint8_t> waterfallPixels;
+    std::uint64_t sampleRateHz = 0;
+    std::uint64_t centerFrequencyHz = 0;
+    std::uint64_t frameIndex = 0;
+    std::string sessionKind = "unknown";
+
+    static constexpr std::uint32_t spectrumWidth = 512;
+    static constexpr std::uint32_t spectrumHeight = 96;
+    static constexpr std::uint32_t waterfallWidth = spectrumWidth;
+    static constexpr std::uint32_t waterfallHeight = 160;
 };
 
 std::uint64_t fileSizeBytes(const std::string& path) {
@@ -43,6 +96,33 @@ std::uint64_t fileSizeBytes(const std::string& path) {
     }
 
     return static_cast<std::uint64_t>(size);
+}
+
+std::uint64_t bytesPerIqSample(sdr::SampleEncoding encoding) {
+    return encoding == sdr::SampleEncoding::Cs8
+            ? sizeof(std::int8_t) * 2U
+            : sizeof(std::int16_t) * 2U;
+}
+
+sdr::SampleEncoding sampleEncodingFromJInt(jint value) {
+    if (value == 1) {
+        return sdr::SampleEncoding::Cs8;
+    }
+    return sdr::SampleEncoding::Cs16;
+}
+
+sdr::SampleEncoding sampleEncodingFromMetadata(const std::string& format) {
+    if (format == "CS8" || format == "cs8") {
+        return sdr::SampleEncoding::Cs8;
+    }
+    return sdr::SampleEncoding::Cs16;
+}
+
+const char* sampleEncodingName(sdr::SampleEncoding encoding) {
+    if (encoding == sdr::SampleEncoding::Cs8) {
+        return "CS8";
+    }
+    return "CS16";
 }
 
 std::string errorDiagnostic(const std::string& path, const std::string& message) {
@@ -158,8 +238,8 @@ void appendMetadataDiagnostic(std::ostringstream& diagnostic, const sdr::IQMetad
 
 std::string diagnoseFirstBlock(const std::string& filePath) {
     const auto sizeBytes = fileSizeBytes(filePath);
-    const auto iqSampleCount = sizeBytes / kBytesPerIqSample;
-    const auto trailingBytes = sizeBytes % kBytesPerIqSample;
+    const auto iqSampleCount = sizeBytes / bytesPerIqSample(sdr::SampleEncoding::Cs16);
+    const auto trailingBytes = sizeBytes % bytesPerIqSample(sdr::SampleEncoding::Cs16);
 
     sdr::FileSource source(filePath, 0);
     const auto openStatus = source.open();
@@ -313,7 +393,8 @@ std::string diagnoseSpectrum(const std::string& filePath, const sdr::IQMetadata&
                                             std::numeric_limits<std::uint32_t>::max())
                     ? static_cast<std::uint32_t>(metadata.sampleRateHz)
                     : 0;
-    sdr::FileSource source(filePath, sourceSampleRate);
+    const auto encoding = sampleEncodingFromMetadata(metadata.format);
+    sdr::FileSource source(filePath, sourceSampleRate, encoding);
     const auto openStatus = source.open();
     if (!openStatus.ok()) {
         return errorDiagnostic(filePath, openStatus.message);
@@ -331,6 +412,7 @@ std::string diagnoseSpectrum(const std::string& filePath, const sdr::IQMetadata&
     std::ostringstream diagnostic;
     diagnostic << "CS16 spectrum diagnostic\n"
                << "path: " << filePath << "\n"
+               << "sample encoding: " << sampleEncodingName(encoding) << "\n"
                << "samples read: " << readResult.samplesRead;
     appendMetadataDiagnostic(diagnostic, metadata);
 
@@ -398,14 +480,82 @@ std::string videoFrameDiagnostic(const sdr::VideoFrame& frame) {
     return diagnostic.str();
 }
 
+std::uint8_t pixelPercentile(
+        const std::array<std::uint32_t, 256>& histogram,
+        std::size_t sampleCount,
+        double fraction) {
+    if (sampleCount == 0) {
+        return 0;
+    }
+
+    const auto target = static_cast<std::size_t>(
+            std::clamp(fraction, 0.0, 1.0) * static_cast<double>(sampleCount - 1U));
+    std::size_t cumulative = 0;
+    for (std::size_t value = 0; value < histogram.size(); ++value) {
+        cumulative += histogram[value];
+        if (cumulative > target) {
+            return static_cast<std::uint8_t>(value);
+        }
+    }
+    return 255;
+}
+
+std::vector<std::uint8_t> displayLeveledPixels(
+        const sdr::VideoFrame& frame,
+        std::uint8_t& blackLevel,
+        std::uint8_t& whiteLevel) {
+    blackLevel = 0;
+    whiteLevel = 255;
+    if (frame.pixels.empty()) {
+        return {};
+    }
+
+    std::array<std::uint32_t, 256> histogram{};
+    for (const auto pixel : frame.pixels) {
+        ++histogram[pixel];
+    }
+
+    blackLevel = pixelPercentile(histogram, frame.pixels.size(), 0.05);
+    whiteLevel = pixelPercentile(histogram, frame.pixels.size(), 0.995);
+    if (whiteLevel <= blackLevel || static_cast<int>(whiteLevel) - static_cast<int>(blackLevel) < 24) {
+        return frame.pixels;
+    }
+
+    constexpr float kOutputBlack = 8.0F;
+    constexpr float kOutputWhite = 246.0F;
+    const float scale = (kOutputWhite - kOutputBlack) /
+            static_cast<float>(whiteLevel - blackLevel);
+
+    std::vector<std::uint8_t> adjusted(frame.pixels.size());
+    for (std::size_t index = 0; index < frame.pixels.size(); ++index) {
+        const float value = (static_cast<float>(frame.pixels[index]) -
+                             static_cast<float>(blackLevel)) * scale + kOutputBlack;
+        adjusted[index] = static_cast<std::uint8_t>(
+                std::clamp(value, 0.0F, 255.0F) + 0.5F);
+    }
+    return adjusted;
+}
+
 jbyteArray frameToJByteArray(JNIEnv* env, const sdr::VideoFrame& frame) {
     if (!frame.valid()) {
         return env->NewByteArray(0);
     }
 
-    const auto diagnostic = videoFrameDiagnostic(frame);
+    std::uint8_t displayBlackLevel = 0;
+    std::uint8_t displayWhiteLevel = 255;
+    const auto displayPixels = displayLeveledPixels(
+            frame,
+            displayBlackLevel,
+            displayWhiteLevel);
+
+    std::ostringstream diagnostic;
+    diagnostic << videoFrameDiagnostic(frame)
+               << "\n"
+               << "display_black_level: " << static_cast<int>(displayBlackLevel) << "\n"
+               << "display_white_level: " << static_cast<int>(displayWhiteLevel);
+    const auto diagnosticText = diagnostic.str();
     constexpr std::size_t kHeaderBytes = sizeof(std::uint32_t) * 3;
-    const auto packetSize = kHeaderBytes + frame.pixels.size() + diagnostic.size();
+    const auto packetSize = kHeaderBytes + displayPixels.size() + diagnosticText.size();
     if (packetSize > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
         return env->NewByteArray(0);
     }
@@ -414,15 +564,176 @@ jbyteArray frameToJByteArray(JNIEnv* env, const sdr::VideoFrame& frame) {
     packet.reserve(packetSize);
     writeLittleEndianUint32(frame.width, packet);
     writeLittleEndianUint32(frame.height, packet);
-    writeLittleEndianUint32(static_cast<std::uint32_t>(diagnostic.size()), packet);
-    packet.insert(packet.end(), frame.pixels.begin(), frame.pixels.end());
-    packet.insert(packet.end(), diagnostic.begin(), diagnostic.end());
+    writeLittleEndianUint32(static_cast<std::uint32_t>(diagnosticText.size()), packet);
+    packet.insert(packet.end(), displayPixels.begin(), displayPixels.end());
+    packet.insert(packet.end(), diagnosticText.begin(), diagnosticText.end());
 
     auto* result = env->NewByteArray(static_cast<jsize>(packet.size()));
     if (result == nullptr) {
         return nullptr;
     }
 
+    env->SetByteArrayRegion(
+            result,
+            0,
+            static_cast<jsize>(packet.size()),
+            reinterpret_cast<const jbyte*>(packet.data()));
+    return result;
+}
+
+std::uint8_t clampByte(int value) {
+    return static_cast<std::uint8_t>(std::min(255, std::max(0, value)));
+}
+
+std::uint8_t dbfsToPixel(float dbfs) {
+    constexpr float minDbfs = -95.0F;
+    constexpr float maxDbfs = -15.0F;
+    if (!std::isfinite(dbfs)) {
+        return 0;
+    }
+    const float normalized = (dbfs - minDbfs) / (maxDbfs - minDbfs);
+    return clampByte(static_cast<int>(std::round(normalized * 255.0F)));
+}
+
+float binForColumn(const std::vector<float>& bins, std::uint32_t column, std::uint32_t width) {
+    const auto begin = static_cast<std::size_t>(
+            (static_cast<std::uint64_t>(column) * bins.size()) / width);
+    auto end = static_cast<std::size_t>(
+            (static_cast<std::uint64_t>(column + 1U) * bins.size()) / width);
+    end = std::max<std::size_t>(begin + 1U, std::min<std::size_t>(end, bins.size()));
+
+    float peak = -std::numeric_limits<float>::infinity();
+    for (std::size_t index = begin; index < end; ++index) {
+        peak = std::max(peak, bins[index]);
+    }
+    return peak;
+}
+
+void setPixel(
+        std::vector<std::uint8_t>& pixels,
+        std::uint32_t width,
+        std::uint32_t height,
+        std::uint32_t x,
+        std::uint32_t y,
+        std::uint8_t value) {
+    if (x >= width || y >= height) {
+        return;
+    }
+    pixels[static_cast<std::size_t>(y) * width + x] = value;
+}
+
+void drawSpectrumPanel(
+        SpectrumViewSession& session,
+        std::vector<std::uint8_t>& pixels,
+        const std::vector<std::uint8_t>& fftRow,
+        const sdr::SpectrumStats& stats) {
+    constexpr auto width = SpectrumViewSession::spectrumWidth;
+    constexpr auto height = SpectrumViewSession::spectrumHeight;
+
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const bool horizontalGrid = (y % 24U) == 0U;
+            const bool verticalGrid = (x % 64U) == 0U || x == (width / 2U);
+            pixels[static_cast<std::size_t>(y) * width + x] =
+                    horizontalGrid || verticalGrid ? 28 : 4;
+        }
+    }
+
+    std::uint32_t previousY = height - 1U;
+    for (std::uint32_t x = 0; x < width; ++x) {
+        const auto value = fftRow[x];
+        const auto y = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(255U - value) * (height - 1U)) / 255U);
+        const auto startY = std::min(previousY, y);
+        const auto endY = std::max(previousY, y);
+        for (std::uint32_t lineY = startY; lineY <= endY; ++lineY) {
+            setPixel(pixels, width, height, x, lineY, 245);
+        }
+        if (y + 1U < height) {
+            setPixel(pixels, width, height, x, y + 1U, 120);
+        }
+        previousY = y;
+    }
+
+    if (stats.hasSampleRate && session.sampleRateHz != 0) {
+        const auto centerX = width / 2U;
+        for (std::uint32_t y = 0; y < height; ++y) {
+            setPixel(pixels, width, height, centerX, y, 180);
+        }
+    }
+}
+
+void pushWaterfallRow(SpectrumViewSession& session, const std::vector<std::uint8_t>& fftRow) {
+    constexpr auto width = SpectrumViewSession::waterfallWidth;
+    constexpr auto height = SpectrumViewSession::waterfallHeight;
+    auto& waterfall = session.waterfallPixels;
+    std::copy_backward(
+            waterfall.begin(),
+            waterfall.end() - static_cast<std::ptrdiff_t>(width),
+            waterfall.end());
+    std::copy(fftRow.begin(), fftRow.end(), waterfall.begin());
+    (void)height;
+}
+
+jbyteArray spectrumFrameToJByteArray(
+        JNIEnv* env,
+        SpectrumViewSession& session,
+        const sdr::SpectrumStats& stats) {
+    constexpr auto width = SpectrumViewSession::spectrumWidth;
+    constexpr auto spectrumHeight = SpectrumViewSession::spectrumHeight;
+    constexpr auto waterfallHeight = SpectrumViewSession::waterfallHeight;
+    constexpr auto height = spectrumHeight + waterfallHeight;
+
+    std::vector<std::uint8_t> fftRow(width);
+    for (std::uint32_t x = 0; x < width; ++x) {
+        fftRow[x] = dbfsToPixel(binForColumn(session.spectrumBinsDbfs, x, width));
+    }
+
+    pushWaterfallRow(session, fftRow);
+
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height, 0);
+    drawSpectrumPanel(session, pixels, fftRow, stats);
+    std::copy(
+            session.waterfallPixels.begin(),
+            session.waterfallPixels.end(),
+            pixels.begin() + static_cast<std::ptrdiff_t>(width * spectrumHeight));
+
+    std::ostringstream diagnostic;
+    diagnostic << "FFT / waterfall\n"
+               << "source: " << session.sessionKind << "\n"
+               << "frame_index: " << session.frameIndex << "\n"
+               << "sample_rate_hz: " << session.sampleRateHz << "\n"
+               << "center_frequency_hz: " << session.centerFrequencyHz << "\n"
+               << "fft_size: " << stats.fftSize << "\n"
+               << "bin_width_hz: " << stats.binWidthHz << "\n"
+               << "noise_floor_dbfs: " << stats.averageNoiseFloorDbfs << "\n"
+               << "peak_level_dbfs: " << stats.peakLevelDbfs << "\n"
+               << "peak_offset_hz: " << stats.peakFrequencyOffsetHz << "\n"
+               << "occupied_bandwidth_hz: " << stats.occupiedBandwidthHz;
+
+    if (stats.hasCenterFrequency) {
+        diagnostic << "\npeak_rf_frequency_hz: " << stats.peakRfFrequencyHz;
+    }
+
+    constexpr std::size_t kHeaderBytes = sizeof(std::uint32_t) * 3;
+    const auto diagnosticText = diagnostic.str();
+    const auto packetSize = kHeaderBytes + pixels.size() + diagnosticText.size();
+    if (packetSize > static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
+        return env->NewByteArray(0);
+    }
+
+    std::vector<std::uint8_t> packet;
+    packet.reserve(packetSize);
+    writeLittleEndianUint32(width, packet);
+    writeLittleEndianUint32(height, packet);
+    writeLittleEndianUint32(static_cast<std::uint32_t>(diagnosticText.size()), packet);
+    packet.insert(packet.end(), pixels.begin(), pixels.end());
+    packet.insert(packet.end(), diagnosticText.begin(), diagnosticText.end());
+
+    auto* result = env->NewByteArray(static_cast<jsize>(packet.size()));
+    if (result == nullptr) {
+        return nullptr;
+    }
     env->SetByteArrayRegion(
             result,
             0,
@@ -461,9 +772,25 @@ double playbackFrameRateForStandard(sdr::VideoStandard standard) {
     }
 }
 
+void configurePlaybackDecoder(AnalogPlaybackSession& session) {
+    sdr::AnalogVideoDecoderConfig config;
+    config.sampleRateHz = session.sampleRateHz;
+    config.analysisRateHz = 1500000;
+    config.readBlockSamples = 262144;
+    config.fastFieldPreview = true;
+    config.detectFrameSyncInFastPreview = true;
+    config.fastPreviewFieldStride = 2;
+    config.timing = sdr::timingForStandard(session.standard);
+    if (session.playbackFrameRateHz > 0.0) {
+        config.timing.frameRateHz = session.playbackFrameRateHz;
+    }
+    session.decoder = std::make_unique<sdr::AnalogVideoDecoder>(config);
+}
+
 sdr::VideoFrame decodeAnalogVideoFrameForStandard(
         const std::string& filePath,
         std::uint64_t sampleRateHz,
+        sdr::SampleEncoding sampleEncoding,
         sdr::VideoStandard standard,
         std::uint64_t frameIndex) {
     const auto sourceSampleRate =
@@ -473,7 +800,7 @@ sdr::VideoFrame decodeAnalogVideoFrameForStandard(
                     ? static_cast<std::uint32_t>(sampleRateHz)
                     : 0;
 
-    sdr::FileSource source(filePath, sourceSampleRate);
+    sdr::FileSource source(filePath, sourceSampleRate, sampleEncoding);
     const auto openStatus = source.open();
     if (!openStatus.ok()) {
         sdr::VideoFrame frame;
@@ -507,6 +834,7 @@ sdr::VideoFrame decodeAnalogVideoFrame(
         const std::string& filePath,
         bool hasSampleRateHz,
         std::uint64_t sampleRateHz,
+        sdr::SampleEncoding sampleEncoding,
         sdr::VideoStandard requestedStandard,
         std::uint64_t frameIndex) {
     if (!hasSampleRateHz || sampleRateHz == 0) {
@@ -516,17 +844,24 @@ sdr::VideoFrame decodeAnalogVideoFrame(
     }
 
     if (requestedStandard != sdr::VideoStandard::AUTO) {
-        return decodeAnalogVideoFrameForStandard(filePath, sampleRateHz, requestedStandard, frameIndex);
+        return decodeAnalogVideoFrameForStandard(
+                filePath,
+                sampleRateHz,
+                sampleEncoding,
+                requestedStandard,
+                frameIndex);
     }
 
     auto palFrame = decodeAnalogVideoFrameForStandard(
             filePath,
             sampleRateHz,
+            sampleEncoding,
             sdr::VideoStandard::PAL625_25FPS,
             frameIndex);
     auto ntscFrame = decodeAnalogVideoFrameForStandard(
             filePath,
             sampleRateHz,
+            sampleEncoding,
             sdr::VideoStandard::NTSC_525_30FPS,
             frameIndex);
 
@@ -549,6 +884,7 @@ sdr::VideoFrame decodeAnalogVideoFrame(
 sdr::VideoStandard choosePlaybackStandard(
         const std::string& filePath,
         std::uint64_t sampleRateHz,
+        sdr::SampleEncoding sampleEncoding,
         sdr::VideoStandard requestedStandard) {
     if (requestedStandard != sdr::VideoStandard::AUTO) {
         return requestedStandard;
@@ -557,11 +893,13 @@ sdr::VideoStandard choosePlaybackStandard(
     const auto palFrame = decodeAnalogVideoFrameForStandard(
             filePath,
             sampleRateHz,
+            sampleEncoding,
             sdr::VideoStandard::PAL625_25FPS,
             0);
     const auto ntscFrame = decodeAnalogVideoFrameForStandard(
             filePath,
             sampleRateHz,
+            sampleEncoding,
             sdr::VideoStandard::NTSC_525_30FPS,
             0);
     return shouldSelectNtscForAuto(palFrame, ntscFrame)
@@ -573,6 +911,7 @@ AnalogPlaybackSession* createAnalogPlaybackSession(
         const std::string& filePath,
         bool hasSampleRateHz,
         std::uint64_t sampleRateHz,
+        sdr::SampleEncoding sampleEncoding,
         sdr::VideoStandard requestedStandard) {
     if (!hasSampleRateHz || sampleRateHz == 0) {
         return nullptr;
@@ -587,36 +926,367 @@ AnalogPlaybackSession* createAnalogPlaybackSession(
 
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
-    session->standard = choosePlaybackStandard(filePath, sampleRateHz, requestedStandard);
+    session->standard = choosePlaybackStandard(filePath, sampleRateHz, sampleEncoding, requestedStandard);
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
-    session->totalSampleCount = fileSizeBytes(filePath) / kBytesPerIqSample;
-    session->source = std::make_unique<sdr::FileSource>(filePath, sourceSampleRate);
+    session->totalSampleCount = fileSizeBytes(filePath) / bytesPerIqSample(sampleEncoding);
+    session->loopAtEndOfStream = true;
+    session->sessionKind = "file";
+    session->source = std::make_unique<sdr::FileSource>(filePath, sourceSampleRate, sampleEncoding);
 
     const auto openStatus = session->source->open();
     if (!openStatus.ok()) {
         return nullptr;
     }
 
-    sdr::AnalogVideoDecoderConfig config;
-    config.sampleRateHz = sampleRateHz;
-    config.analysisRateHz = 1500000;
-    config.readBlockSamples = 262144;
-    config.fastFieldPreview = true;
-    config.detectFrameSyncInFastPreview = true;
-    config.fastPreviewFieldStride = 2;
-    config.timing = sdr::timingForStandard(session->standard);
-    if (session->playbackFrameRateHz > 0.0) {
-        config.timing.frameRateHz = session->playbackFrameRateHz;
-    }
-    session->decoder = std::make_unique<sdr::AnalogVideoDecoder>(config);
+    configurePlaybackDecoder(*session);
 
     return session.release();
 }
 
+AnalogPlaybackSession* createPlutoPlaybackSession(
+        const std::string& uri,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        std::uint64_t rfBandwidthHz,
+        double gainDb,
+        sdr::SampleEncoding sampleEncoding,
+        std::int64_t loOffsetHz,
+        bool hardwareIqCorrection,
+        bool hardwareBbdcCorrection,
+        bool hardwareRfdcCorrection,
+        sdr::VideoStandard requestedStandard) {
+    if (sampleRateHz == 0 || centerFrequencyHz == 0 || rfBandwidthHz == 0) {
+        return nullptr;
+    }
+
+    sdr::PlutoSourceConfig config;
+    config.uri = uri.empty() ? "usb:" : uri;
+    config.sampleRateHz = sampleRateHz;
+    config.centerFrequencyHz = centerFrequencyHz;
+    config.rfBandwidthHz = rfBandwidthHz;
+    config.gainDb = gainDb;
+    config.sampleEncoding = sampleEncoding;
+    config.loOffsetHz = loOffsetHz;
+    config.hardwareIqCorrection = hardwareIqCorrection;
+    config.hardwareBbdcCorrection = hardwareBbdcCorrection;
+    config.hardwareRfdcCorrection = hardwareRfdcCorrection;
+    config.bufferSamples = 32768;
+
+    auto source = std::make_unique<sdr::PlutoSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<AnalogPlaybackSession>();
+    session->sampleRateHz = sampleRateHz;
+    session->standard = requestedStandard == sdr::VideoStandard::AUTO
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : requestedStandard;
+    session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
+    session->loopAtEndOfStream = false;
+    session->sessionKind = "pluto_usb_live";
+    session->source = std::move(source);
+    configurePlaybackDecoder(*session);
+    return session.release();
+}
+
+SpectrumViewSession* createPlutoSpectrumSession(
+        const std::string& uri,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        std::uint64_t rfBandwidthHz,
+        double gainDb,
+        sdr::SampleEncoding sampleEncoding,
+        std::int64_t loOffsetHz,
+        bool hardwareIqCorrection,
+        bool hardwareBbdcCorrection,
+        bool hardwareRfdcCorrection) {
+    if (sampleRateHz == 0 || centerFrequencyHz == 0 || rfBandwidthHz == 0) {
+        return nullptr;
+    }
+
+    sdr::PlutoSourceConfig config;
+    config.uri = uri.empty() ? "usb:" : uri;
+    config.sampleRateHz = sampleRateHz;
+    config.centerFrequencyHz = centerFrequencyHz;
+    config.rfBandwidthHz = rfBandwidthHz;
+    config.gainDb = gainDb;
+    config.sampleEncoding = sampleEncoding;
+    config.loOffsetHz = loOffsetHz;
+    config.hardwareIqCorrection = hardwareIqCorrection;
+    config.hardwareBbdcCorrection = hardwareBbdcCorrection;
+    config.hardwareRfdcCorrection = hardwareRfdcCorrection;
+    config.bufferSamples = 32768;
+
+    auto source = std::make_unique<sdr::PlutoSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<SpectrumViewSession>(1024);
+    session->sampleRateHz = sampleRateHz;
+    session->centerFrequencyHz = centerFrequencyHz;
+    session->sessionKind = "pluto_usb_live";
+    session->source = std::move(source);
+    return session.release();
+}
+
+AnalogPlaybackSession* createMaiaPlaybackSession(
+        JNIEnv* env,
+        const std::string& host,
+        std::uint32_t port,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard requestedStandard,
+        jobject androidHttpTransport) {
+    if (port == 0 || port > 65535U) {
+        setLastNativeError("Maia playback requires a TCP port between 1 and 65535");
+        return nullptr;
+    }
+    if (sampleRateHz == 0) {
+        setLastNativeError("Maia playback requires a non-zero sample rate");
+        return nullptr;
+    }
+    if (sampleRateHz > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        setLastNativeError("Maia sample rate is too large");
+        return nullptr;
+    }
+    if (androidHttpTransport == nullptr) {
+        setLastNativeError("Maia playback requires an Android HTTP transport");
+        return nullptr;
+    }
+
+    sdr::MaiaSourceConfig config;
+    config.host = host.empty() ? "192.168.2.1" : host;
+    config.port = static_cast<std::uint16_t>(port);
+    config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
+    config.bufferSamples = 32768;
+    config.androidHttpTransport = env->NewGlobalRef(androidHttpTransport);
+    if (config.androidHttpTransport == nullptr) {
+        setLastNativeError("Failed to retain Maia Android HTTP transport");
+        return nullptr;
+    }
+
+    auto source = std::make_unique<sdr::MaiaSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<AnalogPlaybackSession>();
+    session->sampleRateHz = sampleRateHz;
+    session->standard = requestedStandard == sdr::VideoStandard::AUTO
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : requestedStandard;
+    session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
+    session->loopAtEndOfStream = false;
+    session->sessionKind = "maia_http_cs8_live";
+    session->source = std::move(source);
+    configurePlaybackDecoder(*session);
+    return session.release();
+}
+
+SpectrumViewSession* createMaiaSpectrumSession(
+        JNIEnv* env,
+        const std::string& host,
+        std::uint32_t port,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        jobject androidHttpTransport) {
+    if (port == 0 || port > 65535U) {
+        setLastNativeError("Maia spectrum requires a TCP port between 1 and 65535");
+        return nullptr;
+    }
+    if (sampleRateHz == 0) {
+        setLastNativeError("Maia spectrum requires a non-zero sample rate");
+        return nullptr;
+    }
+    if (sampleRateHz > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        setLastNativeError("Maia sample rate is too large");
+        return nullptr;
+    }
+    if (androidHttpTransport == nullptr) {
+        setLastNativeError("Maia spectrum requires an Android HTTP transport");
+        return nullptr;
+    }
+
+    sdr::MaiaSourceConfig config;
+    config.host = host.empty() ? "192.168.2.1" : host;
+    config.port = static_cast<std::uint16_t>(port);
+    config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
+    config.bufferSamples = 32768;
+    config.androidHttpTransport = env->NewGlobalRef(androidHttpTransport);
+    if (config.androidHttpTransport == nullptr) {
+        setLastNativeError("Failed to retain Maia Android HTTP transport");
+        return nullptr;
+    }
+
+    auto source = std::make_unique<sdr::MaiaSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<SpectrumViewSession>(1024);
+    session->sampleRateHz = sampleRateHz;
+    session->centerFrequencyHz = centerFrequencyHz;
+    session->sessionKind = "maia_http_cs8_live";
+    session->source = std::move(source);
+    return session.release();
+}
+
+AnalogPlaybackSession* createPlutoWebSocketPlaybackSession(
+        JNIEnv* env,
+        const std::string& host,
+        std::uint32_t port,
+        const std::string& path,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard requestedStandard,
+        jobject androidWebSocketTransport) {
+    if (port == 0 || port > 65535U) {
+        setLastNativeError("Pluto WebSocket playback requires a TCP port between 1 and 65535");
+        return nullptr;
+    }
+    if (path.empty() || path.front() != '/') {
+        setLastNativeError("Pluto WebSocket playback requires a path beginning with /");
+        return nullptr;
+    }
+    if (sampleRateHz == 0) {
+        setLastNativeError("Pluto WebSocket playback requires a non-zero sample rate");
+        return nullptr;
+    }
+    if (sampleRateHz > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        setLastNativeError("Pluto WebSocket sample rate is too large");
+        return nullptr;
+    }
+    if (androidWebSocketTransport == nullptr) {
+        setLastNativeError("Pluto WebSocket playback requires an Android WebSocket transport");
+        return nullptr;
+    }
+
+    sdr::PlutoWebSocketSourceConfig config;
+    config.host = host.empty() ? "192.168.2.1" : host;
+    config.port = static_cast<std::uint16_t>(port);
+    config.path = path;
+    config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
+    config.bufferSamples = 32768;
+    config.androidWebSocketTransport = env->NewGlobalRef(androidWebSocketTransport);
+    if (config.androidWebSocketTransport == nullptr) {
+        setLastNativeError("Failed to retain Pluto Android WebSocket transport");
+        return nullptr;
+    }
+
+    auto source = std::make_unique<sdr::PlutoWebSocketSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<AnalogPlaybackSession>();
+    session->sampleRateHz = sampleRateHz;
+    session->standard = requestedStandard == sdr::VideoStandard::AUTO
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : requestedStandard;
+    session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
+    session->loopAtEndOfStream = false;
+    session->sessionKind = "pluto_websocket_cs8_live";
+    session->source = std::move(source);
+    configurePlaybackDecoder(*session);
+    return session.release();
+}
+
+SpectrumViewSession* createPlutoWebSocketSpectrumSession(
+        JNIEnv* env,
+        const std::string& host,
+        std::uint32_t port,
+        const std::string& path,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        jobject androidWebSocketTransport) {
+    if (port == 0 || port > 65535U) {
+        setLastNativeError("Pluto WebSocket spectrum requires a TCP port between 1 and 65535");
+        return nullptr;
+    }
+    if (path.empty() || path.front() != '/') {
+        setLastNativeError("Pluto WebSocket spectrum requires a path beginning with /");
+        return nullptr;
+    }
+    if (sampleRateHz == 0) {
+        setLastNativeError("Pluto WebSocket spectrum requires a non-zero sample rate");
+        return nullptr;
+    }
+    if (sampleRateHz > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        setLastNativeError("Pluto WebSocket sample rate is too large");
+        return nullptr;
+    }
+    if (androidWebSocketTransport == nullptr) {
+        setLastNativeError("Pluto WebSocket spectrum requires an Android WebSocket transport");
+        return nullptr;
+    }
+
+    sdr::PlutoWebSocketSourceConfig config;
+    config.host = host.empty() ? "192.168.2.1" : host;
+    config.port = static_cast<std::uint16_t>(port);
+    config.path = path;
+    config.sampleRateHz = static_cast<std::uint32_t>(sampleRateHz);
+    config.bufferSamples = 32768;
+    config.androidWebSocketTransport = env->NewGlobalRef(androidWebSocketTransport);
+    if (config.androidWebSocketTransport == nullptr) {
+        setLastNativeError("Failed to retain Pluto Android WebSocket transport");
+        return nullptr;
+    }
+
+    auto source = std::make_unique<sdr::PlutoWebSocketSource>(config);
+    const auto openStatus = source->open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return nullptr;
+    }
+
+    auto session = std::make_unique<SpectrumViewSession>(1024);
+    session->sampleRateHz = sampleRateHz;
+    session->centerFrequencyHz = centerFrequencyHz;
+    session->sessionKind = "pluto_websocket_cs8_live";
+    session->source = std::move(source);
+    return session.release();
+}
+
+sdr::SpectrumStats readNextSpectrumStats(SpectrumViewSession& session, bool& ok) {
+    ok = false;
+    sdr::SpectrumStats emptyStats;
+    if (session.source == nullptr) {
+        return emptyStats;
+    }
+
+    const auto readResult = session.source->read(session.buffer, session.analyzer.fftSize());
+    if (!readResult.ok() || readResult.samplesRead < session.analyzer.fftSize()) {
+        return emptyStats;
+    }
+
+    auto stats = session.analyzer.analyze(
+            session.buffer,
+            session.sampleRateHz,
+            session.centerFrequencyHz,
+            session.centerFrequencyHz != 0);
+    session.analyzer.copyShiftedDbfsBins(session.spectrumBinsDbfs);
+    ++session.frameIndex;
+    ok = true;
+    return stats;
+}
+
 sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
     auto frame = session.decoder->decodeOneFrame(*session.source);
-    if (!frame.valid()) {
-        const auto seekStatus = session.source->seekSamples(0);
+    if (!frame.valid() && session.loopAtEndOfStream) {
+        auto* fileSource = dynamic_cast<sdr::FileSource*>(session.source.get());
+        const auto seekStatus = fileSource != nullptr
+                ? fileSource->seekSamples(0)
+                : sdr::SourceStatus{sdr::SampleSourceError::InvalidArgument, "playback source is not seekable"};
         session.frameIndex = 0;
         if (seekStatus.ok()) {
             frame = session.decoder->decodeOneFrame(*session.source);
@@ -627,8 +1297,14 @@ sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
         std::ostringstream message;
         message << frame.message
                 << "; playback_session=sequential"
+                << "; playback_source=" << session.sessionKind
                 << "; playback_frame_rate_hz=" << session.playbackFrameRateHz
                 << "; playback_frame_index=" << session.frameIndex;
+        if (session.sessionKind == "pluto_usb_live" ||
+            session.sessionKind == "pluto_websocket_cs8_live") {
+            message << "; live_auto_standard="
+                    << (session.standard == sdr::VideoStandard::NTSC_525_30FPS ? "NTSC525" : "PAL625");
+        }
         frame.message = message.str();
         ++session.frameIndex;
     }
@@ -647,7 +1323,157 @@ sdr::VideoStandard videoStandardFromJInt(jint standard) {
     }
 }
 
+std::string capturePlutoIqToFile(
+        const std::string& outputPath,
+        const std::string& uri,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        std::uint64_t rfBandwidthHz,
+        double gainDb,
+        sdr::SampleEncoding sampleEncoding,
+        std::int64_t loOffsetHz,
+        bool hardwareIqCorrection,
+        bool hardwareBbdcCorrection,
+        bool hardwareRfdcCorrection,
+        double durationSec) {
+    if (outputPath.empty()) {
+        return "Pluto IQ capture\nstatus: failed\nerror: output path is empty";
+    }
+    if (sampleRateHz == 0 || centerFrequencyHz == 0 || rfBandwidthHz == 0 || durationSec <= 0.0) {
+        return "Pluto IQ capture\nstatus: failed\nerror: invalid capture parameters";
+    }
+
+    sdr::PlutoSourceConfig config;
+    config.uri = uri.empty() ? "usb:" : uri;
+    config.sampleRateHz = sampleRateHz;
+    config.centerFrequencyHz = centerFrequencyHz;
+    config.rfBandwidthHz = rfBandwidthHz;
+    config.gainDb = gainDb;
+    config.sampleEncoding = sampleEncoding;
+    config.loOffsetHz = loOffsetHz;
+    config.hardwareIqCorrection = hardwareIqCorrection;
+    config.hardwareBbdcCorrection = hardwareBbdcCorrection;
+    config.hardwareRfdcCorrection = hardwareRfdcCorrection;
+    config.bufferSamples = 32768;
+
+    sdr::PlutoSource source(config);
+    const auto openStatus = source.open();
+    if (!openStatus.ok()) {
+        std::ostringstream diagnostic;
+        diagnostic << "Pluto IQ capture\n"
+                   << "status: failed\n"
+                   << "uri: " << config.uri << "\n"
+                   << "error: " << openStatus.message;
+        return diagnostic.str();
+    }
+
+    std::ofstream output(outputPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!output.is_open()) {
+        source.close();
+        return "Pluto IQ capture\nstatus: failed\nerror: failed to open output file";
+    }
+
+    const auto targetSamples = static_cast<std::uint64_t>(
+            std::max(1.0, std::round(static_cast<double>(sampleRateHz) * durationSec)));
+    std::uint64_t writtenSamples = 0;
+    sdr::SampleBuffer buffer;
+    std::vector<std::int8_t> cs8WriteScratch;
+    if (sampleEncoding == sdr::SampleEncoding::Cs8) {
+        cs8WriteScratch.resize(config.bufferSamples * sdr::SampleBuffer::kValuesPerIqSample);
+    }
+    while (writtenSamples < targetSamples) {
+        const auto requested = static_cast<std::size_t>(
+                std::min<std::uint64_t>(config.bufferSamples, targetSamples - writtenSamples));
+        const auto readResult = source.read(buffer, requested);
+        if (!readResult.ok()) {
+            output.close();
+            source.close();
+            std::ostringstream diagnostic;
+            diagnostic << "Pluto IQ capture\n"
+                       << "status: failed\n"
+                       << "uri: " << config.uri << "\n"
+                       << "samples_written: " << writtenSamples << "\n"
+                       << "error: " << readResult.message;
+            return diagnostic.str();
+        }
+        if (readResult.samplesRead == 0) {
+            break;
+        }
+
+        if (sampleEncoding == sdr::SampleEncoding::Cs8) {
+            for (std::size_t index = 0; index < buffer.valueCount(); ++index) {
+                cs8WriteScratch[index] = static_cast<std::int8_t>(buffer.data()[index] >> 8);
+            }
+            output.write(
+                    reinterpret_cast<const char*>(cs8WriteScratch.data()),
+                    static_cast<std::streamsize>(buffer.valueCount() * sizeof(std::int8_t)));
+        } else {
+            output.write(
+                    reinterpret_cast<const char*>(buffer.data()),
+                    static_cast<std::streamsize>(
+                            buffer.valueCount() * sizeof(std::int16_t)));
+        }
+        if (!output.good()) {
+            output.close();
+            source.close();
+            return "Pluto IQ capture\nstatus: failed\nerror: failed while writing output file";
+        }
+        writtenSamples += readResult.samplesRead;
+    }
+
+    output.close();
+    source.close();
+
+    std::ostringstream diagnostic;
+    diagnostic << "Pluto IQ capture\n"
+               << "status: captured\n"
+               << "uri: " << config.uri << "\n"
+               << "output: " << outputPath << "\n"
+               << "format: " << sampleEncodingName(sampleEncoding) << "\n"
+               << "sample_rate_hz: " << sampleRateHz << "\n"
+               << "center_frequency_hz: " << centerFrequencyHz << "\n"
+               << "rf_bandwidth_hz: " << rfBandwidthHz << "\n"
+               << "lo_offset_hz: " << loOffsetHz << "\n"
+               << "actual_lo_frequency_hz: "
+               << (static_cast<std::int64_t>(centerFrequencyHz) + loOffsetHz) << "\n"
+               << "gain_db: " << gainDb << "\n"
+               << "hardware_iq_correction: " << (hardwareIqCorrection ? "true" : "false") << "\n"
+               << "hardware_bbdc_correction: " << (hardwareBbdcCorrection ? "true" : "false") << "\n"
+               << "hardware_rfdc_correction: " << (hardwareRfdcCorrection ? "true" : "false") << "\n"
+               << "duration_sec: " << durationSec << "\n"
+               << "samples_written: " << writtenSamples;
+    return diagnostic.str();
+}
+
+std::string iioBackendDiagnostic() {
+#ifndef SDRVIDEOSCANNER_HAVE_LIBIIO
+    return "libiio: unavailable\nusb_backend: unavailable\nerror: APK was built without SDRVIDEOSCANNER_HAVE_LIBIIO";
+#else
+    std::ostringstream diagnostic;
+    diagnostic << "libiio: available\n"
+               << "usb_backend: " << (iio_has_backend(nullptr, "usb") ? "available" : "unavailable") << "\n"
+               << "backends:";
+    const auto backendCount = iio_get_builtin_backends_count();
+    for (unsigned int index = 0; index < backendCount; ++index) {
+        const auto* backend = iio_get_builtin_backend(index);
+        if (backend != nullptr) {
+            diagnostic << (index == 0 ? " " : ", ") << backend;
+        }
+    }
+    if (backendCount == 0) {
+        diagnostic << " none";
+    }
+    return diagnostic.str();
+#endif
+}
+
 }  // namespace
+
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    sdr::setMaiaSourceJavaVm(vm);
+    sdr::setPlutoWebSocketSourceJavaVm(vm);
+    return JNI_VERSION_1_6;
+}
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_sdrvideoscanner_MainActivity_diagnoseCs16File(
@@ -735,6 +1561,84 @@ Java_com_example_sdrvideoscanner_MainActivity_diagnoseCs16Spectrum(
     return env->NewStringUTF(diagnostic.c_str());
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_capturePlutoIqToFile(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring outputPath,
+        jstring uri,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jlong rfBandwidthHz,
+        jdouble gainDb,
+        jint sampleFormat,
+        jlong loOffsetHz,
+        jboolean hardwareIqCorrection,
+        jboolean hardwareBbdcCorrection,
+        jboolean hardwareRfdcCorrection,
+        jdouble durationSec) {
+    std::string pathError;
+    const auto filePath = pathFromJString(env, outputPath, pathError);
+    if (!pathError.empty()) {
+        const auto diagnostic = "Pluto IQ capture\nstatus: failed\nerror: " + pathError;
+        return env->NewStringUTF(diagnostic.c_str());
+    }
+
+    const auto uriValue = stringFromJString(env, uri);
+    const auto diagnostic = capturePlutoIqToFile(
+            filePath,
+            uriValue,
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            positiveJLongOrZero(rfBandwidthHz),
+            static_cast<double>(gainDb),
+            sampleEncodingFromJInt(sampleFormat),
+            static_cast<std::int64_t>(loOffsetHz),
+            hardwareIqCorrection == JNI_TRUE,
+            hardwareBbdcCorrection == JNI_TRUE,
+            hardwareRfdcCorrection == JNI_TRUE,
+            static_cast<double>(durationSec));
+    return env->NewStringUTF(diagnostic.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_isPlutoCaptureAvailable(
+        JNIEnv*,
+        jobject /* this */) {
+#ifdef SDRVIDEOSCANNER_HAVE_LIBIIO
+    return JNI_TRUE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_isPlutoUsbCaptureAvailable(
+        JNIEnv*,
+        jobject /* this */) {
+#ifdef SDRVIDEOSCANNER_HAVE_LIBIIO
+    return iio_has_backend(nullptr, "usb") ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_getIioBackendDiagnostic(
+        JNIEnv* env,
+        jobject /* this */) {
+    const auto diagnostic = iioBackendDiagnostic();
+    return env->NewStringUTF(diagnostic.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_consumeLastNativeError(
+        JNIEnv* env,
+        jobject /* this */) {
+    const auto error = consumeLastNativeError();
+    return env->NewStringUTF(error.c_str());
+}
+
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_example_sdrvideoscanner_MainActivity_decodeAnalogVideoFrame(
         JNIEnv* env,
@@ -742,6 +1646,7 @@ Java_com_example_sdrvideoscanner_MainActivity_decodeAnalogVideoFrame(
         jstring path,
         jboolean hasSampleRateHz,
         jlong sampleRateHz,
+        jint sampleFormat,
         jint videoStandard,
         jlong frameIndex) {
     std::string pathError;
@@ -754,6 +1659,7 @@ Java_com_example_sdrvideoscanner_MainActivity_decodeAnalogVideoFrame(
             filePath,
             hasSampleRateHz == JNI_TRUE,
             positiveJLongOrZero(sampleRateHz),
+            sampleEncodingFromJInt(sampleFormat),
             videoStandardFromJInt(videoStandard),
             positiveJLongOrZero(frameIndex));
     return frameToJByteArray(env, frame);
@@ -766,6 +1672,7 @@ Java_com_example_sdrvideoscanner_MainActivity_createAnalogVideoPlaybackSession(
         jstring path,
         jboolean hasSampleRateHz,
         jlong sampleRateHz,
+        jint sampleFormat,
         jint videoStandard) {
     std::string pathError;
     const auto filePath = pathFromJString(env, path, pathError);
@@ -777,7 +1684,154 @@ Java_com_example_sdrvideoscanner_MainActivity_createAnalogVideoPlaybackSession(
             filePath,
             hasSampleRateHz == JNI_TRUE,
             positiveJLongOrZero(sampleRateHz),
+            sampleEncodingFromJInt(sampleFormat),
             videoStandardFromJInt(videoStandard));
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createPlutoAnalogVideoPlaybackSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring uri,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jlong rfBandwidthHz,
+        jdouble gainDb,
+        jint sampleFormat,
+        jlong loOffsetHz,
+        jboolean hardwareIqCorrection,
+        jboolean hardwareBbdcCorrection,
+        jboolean hardwareRfdcCorrection,
+        jint videoStandard) {
+    const auto uriValue = stringFromJString(env, uri);
+    auto* session = createPlutoPlaybackSession(
+            uriValue,
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            positiveJLongOrZero(rfBandwidthHz),
+            static_cast<double>(gainDb),
+            sampleEncodingFromJInt(sampleFormat),
+            static_cast<std::int64_t>(loOffsetHz),
+            hardwareIqCorrection == JNI_TRUE,
+            hardwareBbdcCorrection == JNI_TRUE,
+            hardwareRfdcCorrection == JNI_TRUE,
+            videoStandardFromJInt(videoStandard));
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createPlutoSpectrumSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring uri,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jlong rfBandwidthHz,
+        jdouble gainDb,
+        jint sampleFormat,
+        jlong loOffsetHz,
+        jboolean hardwareIqCorrection,
+        jboolean hardwareBbdcCorrection,
+        jboolean hardwareRfdcCorrection) {
+    const auto uriValue = stringFromJString(env, uri);
+    auto* session = createPlutoSpectrumSession(
+            uriValue,
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            positiveJLongOrZero(rfBandwidthHz),
+            static_cast<double>(gainDb),
+            sampleEncodingFromJInt(sampleFormat),
+            static_cast<std::int64_t>(loOffsetHz),
+            hardwareIqCorrection == JNI_TRUE,
+            hardwareBbdcCorrection == JNI_TRUE,
+            hardwareRfdcCorrection == JNI_TRUE);
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createMaiaAnalogVideoPlaybackSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring host,
+        jint port,
+        jlong sampleRateHz,
+        jint videoStandard,
+        jobject androidHttpTransport) {
+    const auto hostValue = stringFromJString(env, host);
+    auto* session = createMaiaPlaybackSession(
+            env,
+            hostValue,
+            static_cast<std::uint32_t>(std::max(port, 0)),
+            positiveJLongOrZero(sampleRateHz),
+            videoStandardFromJInt(videoStandard),
+            androidHttpTransport);
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createMaiaSpectrumSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring host,
+        jint port,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jobject androidHttpTransport) {
+    const auto hostValue = stringFromJString(env, host);
+    auto* session = createMaiaSpectrumSession(
+            env,
+            hostValue,
+            static_cast<std::uint32_t>(std::max(port, 0)),
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            androidHttpTransport);
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketAnalogVideoPlaybackSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring host,
+        jint port,
+        jstring path,
+        jlong sampleRateHz,
+        jint videoStandard,
+        jobject androidWebSocketTransport) {
+    const auto hostValue = stringFromJString(env, host);
+    const auto pathValue = stringFromJString(env, path);
+    auto* session = createPlutoWebSocketPlaybackSession(
+            env,
+            hostValue,
+            static_cast<std::uint32_t>(std::max(port, 0)),
+            pathValue,
+            positiveJLongOrZero(sampleRateHz),
+            videoStandardFromJInt(videoStandard),
+            androidWebSocketTransport);
+    return reinterpret_cast<jlong>(session);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_createPlutoWebSocketSpectrumSession(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring host,
+        jint port,
+        jstring path,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jobject androidWebSocketTransport) {
+    const auto hostValue = stringFromJString(env, host);
+    const auto pathValue = stringFromJString(env, path);
+    auto* session = createPlutoWebSocketSpectrumSession(
+            env,
+            hostValue,
+            static_cast<std::uint32_t>(std::max(port, 0)),
+            pathValue,
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            androidWebSocketTransport);
     return reinterpret_cast<jlong>(session);
 }
 
@@ -795,11 +1849,38 @@ Java_com_example_sdrvideoscanner_MainActivity_decodeNextAnalogVideoPlaybackFrame
     return frameToJByteArray(env, frame);
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_decodeNextSpectrumFrame(
+        JNIEnv* env,
+        jobject /* this */,
+        jlong sessionHandle) {
+    auto* session = reinterpret_cast<SpectrumViewSession*>(sessionHandle);
+    if (session == nullptr || session->source == nullptr) {
+        return env->NewByteArray(0);
+    }
+
+    bool ok = false;
+    const auto stats = readNextSpectrumStats(*session, ok);
+    if (!ok) {
+        return env->NewByteArray(0);
+    }
+    return spectrumFrameToJByteArray(env, *session, stats);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_sdrvideoscanner_MainActivity_closeAnalogVideoPlaybackSession(
         JNIEnv* /* env */,
         jobject /* this */,
         jlong sessionHandle) {
     auto* session = reinterpret_cast<AnalogPlaybackSession*>(sessionHandle);
+    delete session;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_closeSpectrumSession(
+        JNIEnv* /* env */,
+        jobject /* this */,
+        jlong sessionHandle) {
+    auto* session = reinterpret_cast<SpectrumViewSession*>(sessionHandle);
     delete session;
 }

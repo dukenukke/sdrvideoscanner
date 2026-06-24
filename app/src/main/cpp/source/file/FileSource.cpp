@@ -6,8 +6,10 @@
 namespace sdr {
 namespace {
 
-constexpr std::size_t kBytesPerIqPair =
+constexpr std::size_t kCs16BytesPerIqPair =
         sizeof(std::int16_t) * SampleBuffer::kValuesPerIqSample;
+constexpr std::size_t kCs8BytesPerIqPair =
+        sizeof(std::int8_t) * SampleBuffer::kValuesPerIqSample;
 
 SourceStatus makeStatus(SampleSourceError error, std::string message) {
     return SourceStatus{error, std::move(message)};
@@ -23,9 +25,12 @@ ReadResult makeReadResult(
 
 }  // namespace
 
-FileSource::FileSource(std::string path, std::uint32_t sampleRateHz)
+FileSource::FileSource(
+        std::string path,
+        std::uint32_t sampleRateHz,
+        SampleEncoding encoding)
         : path_(std::move(path)) {
-    format_.encoding = SampleEncoding::Cs16;
+    format_.encoding = encoding;
     format_.sampleRateHz = sampleRateHz;
     format_.channelCount = 1;
 }
@@ -67,7 +72,7 @@ SourceStatus FileSource::seekSamples(std::uint64_t sampleOffset) {
         return makeStatus(SampleSourceError::NotOpen, "IQ file is not open");
     }
 
-    constexpr auto bytesPerIqPair = static_cast<std::uint64_t>(kBytesPerIqPair);
+    const auto bytesPerIqPair = static_cast<std::uint64_t>(this->bytesPerIqPair());
     if (sampleOffset > (std::numeric_limits<std::uint64_t>::max() / bytesPerIqPair)) {
         return makeStatus(SampleSourceError::InvalidArgument, "IQ sample seek offset is too large");
     }
@@ -97,8 +102,9 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
         return {};
     }
 
+    const auto bytesPerPair = bytesPerIqPair();
     const std::size_t maxReadableSamples =
-            static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) / kBytesPerIqPair;
+            static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) / bytesPerPair;
     if (maxSamples > maxReadableSamples) {
         return makeReadResult(
                 0,
@@ -108,8 +114,13 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
     }
 
     buffer.resizeSamples(maxSamples);
-    const auto requestedBytes = static_cast<std::streamsize>(maxSamples * kBytesPerIqPair);
-    file_.read(reinterpret_cast<char*>(buffer.data()), requestedBytes);
+    const auto requestedBytes = static_cast<std::streamsize>(maxSamples * bytesPerPair);
+    if (format_.encoding == SampleEncoding::Cs8) {
+        cs8ReadScratch_.resize(maxSamples * SampleBuffer::kValuesPerIqSample);
+        file_.read(reinterpret_cast<char*>(cs8ReadScratch_.data()), requestedBytes);
+    } else {
+        file_.read(reinterpret_cast<char*>(buffer.data()), requestedBytes);
+    }
 
     const auto bytesRead = file_.gcount();
     if (bytesRead == 0 && file_.eof()) {
@@ -122,19 +133,30 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
         return makeReadResult(0, false, SampleSourceError::ReadFailed, "Failed to read IQ file");
     }
 
-    if ((bytesRead % static_cast<std::streamsize>(kBytesPerIqPair)) != 0) {
+    if ((bytesRead % static_cast<std::streamsize>(bytesPerPair)) != 0) {
         buffer.clear();
         return makeReadResult(
                 0,
                 false,
                 SampleSourceError::ReadFailed,
-                "IQ file ended with an incomplete CS16 I/Q pair");
+                "IQ file ended with an incomplete I/Q pair");
     }
 
-    const auto samplesRead = static_cast<std::size_t>(bytesRead) / kBytesPerIqPair;
+    const auto samplesRead = static_cast<std::size_t>(bytesRead) / bytesPerPair;
     buffer.resizeSamples(samplesRead);
+    if (format_.encoding == SampleEncoding::Cs8) {
+        for (std::size_t index = 0; index < samplesRead * SampleBuffer::kValuesPerIqSample; ++index) {
+            buffer.data()[index] = static_cast<std::int16_t>(cs8ReadScratch_[index]) << 8;
+        }
+    }
 
     return makeReadResult(samplesRead, file_.eof(), SampleSourceError::None, {});
+}
+
+std::size_t FileSource::bytesPerIqPair() const {
+    return format_.encoding == SampleEncoding::Cs8
+            ? kCs8BytesPerIqPair
+            : kCs16BytesPerIqPair;
 }
 
 }  // namespace sdr

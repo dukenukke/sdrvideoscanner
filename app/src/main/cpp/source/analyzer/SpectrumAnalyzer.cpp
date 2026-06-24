@@ -111,6 +111,15 @@ SpectrumStats SpectrumAnalyzer::analyze(
     return stats;
 }
 
+void SpectrumAnalyzer::copyShiftedDbfsBins(std::vector<float>& output) const {
+    output.resize(fftSize_);
+    const auto half = fftSize_ / 2;
+    for (std::size_t index = 0; index < fftSize_; ++index) {
+        const auto sourceIndex = (index + half) % fftSize_;
+        output[index] = static_cast<float>(dbfsFromPower(powerBins_[sourceIndex]));
+    }
+}
+
 void SpectrumAnalyzer::buildHannWindow() {
     if (fftSize_ == 1) {
         window_[0] = 1.0;

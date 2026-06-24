@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "../SampleBuffer.h"
@@ -39,6 +40,8 @@ public:
             std::uint64_t sampleRateHz,
             std::uint64_t centerFrequencyHz,
             bool hasCenterFrequencyHz);
+
+    void copyShiftedDbfsBins(std::vector<float>& output) const;
 
 private:
     struct Complex {
