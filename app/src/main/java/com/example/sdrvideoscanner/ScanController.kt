@@ -3,7 +3,7 @@ package com.example.sdrvideoscanner
 import kotlin.math.abs
 
 class ScanController(
-    private val channels: List<KnownChannel>,
+    channels: List<KnownChannel>,
     private val rfFrontendController: IRfFrontendController,
     private val staleTimeoutMs: Long = DEFAULT_STALE_TIMEOUT_MS,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
@@ -12,6 +12,7 @@ class ScanController(
         private set
 
     private val recordsByFrequency = linkedMapOf<Long, DetectedSignalRecord>()
+    private val channels = channels.sortedBy { it.centerFrequencyHz }
     private var nextChannelIndex = 0
 
     fun startScanning() {
@@ -138,7 +139,7 @@ class ScanController(
                 cluster.maxWith(
                     compareBy<DetectedSignalRecord> { it.rssiDbfs ?: Double.NEGATIVE_INFINITY }
                         .thenBy { it.confidence }
-                        .thenByDescending { it.lastSeenTimestampMs },
+                        .thenBy { -it.channel.centerFrequencyHz },
                 ),
             )
             cluster = mutableListOf()
