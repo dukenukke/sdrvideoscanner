@@ -36,6 +36,10 @@ class ScanController(
         state = ScannerState.IDLE
     }
 
+    fun clearRecords() {
+        recordsByFrequency.clear()
+    }
+
     fun nextChannel(excluding: KnownChannel? = null): KnownChannel? {
         if (channels.isEmpty()) {
             return null

@@ -78,6 +78,16 @@ std::uint64_t decimatedRate(std::uint64_t inputRateHz, std::uint64_t analysisRat
     return inputRateHz / decimation;
 }
 
+std::size_t applyFrameReadMultiplier(std::size_t sampleCount, double multiplier) {
+    if (sampleCount == 0) {
+        return 0;
+    }
+
+    const double boundedMultiplier = std::clamp(multiplier, 1.0, 4.0);
+    return static_cast<std::size_t>(
+            std::max(1.0, std::round(static_cast<double>(sampleCount) * boundedMultiplier)));
+}
+
 }  // namespace
 
 AnalogVideoDecoder::AnalogVideoDecoder(AnalogVideoDecoderConfig config)
@@ -309,16 +319,17 @@ std::size_t AnalogVideoDecoder::frameSampleCount() {
             const auto sampleCount = static_cast<std::size_t>(
                     std::max(1.0, std::floor(exactFieldSamples)));
             fastFieldSampleRemainder_ = exactFieldSamples - static_cast<double>(sampleCount);
-            return sampleCount;
+            return applyFrameReadMultiplier(sampleCount, config_.liveFrameReadMultiplier);
         }
 
         if (config_.timing.lineRateHz > 0.0) {
             const auto frameWithGuardLines = static_cast<double>(config_.timing.totalLines) + 80.0;
-            return static_cast<std::size_t>(
+            const auto sampleCount = static_cast<std::size_t>(
                     std::max(1.0,
                              std::round((static_cast<double>(config_.sampleRateHz) *
                                          frameWithGuardLines) /
                                         config_.timing.lineRateHz)));
+            return applyFrameReadMultiplier(sampleCount, config_.liveFrameReadMultiplier);
         }
     }
 
@@ -328,7 +339,9 @@ std::size_t AnalogVideoDecoder::frameSampleCount() {
     const auto nominalFrameSamples = std::min(byFrameRate, byLineRate);
     const auto playbackChunkSamples = static_cast<std::size_t>(
             std::round(static_cast<double>(config_.sampleRateHz) * 0.045));
-    return std::max<std::size_t>(1, std::max(nominalFrameSamples, playbackChunkSamples));
+    return applyFrameReadMultiplier(
+            std::max<std::size_t>(1, std::max(nominalFrameSamples, playbackChunkSamples)),
+            config_.liveFrameReadMultiplier);
 }
 
 std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(

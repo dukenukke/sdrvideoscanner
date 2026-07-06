@@ -7,6 +7,38 @@
 #include <vector>
 
 namespace sdr {
+namespace {
+
+std::size_t maxUsableStartSyncIndexForActiveLines(
+        const std::vector<std::uint8_t>& video,
+        const std::vector<std::size_t>& syncStarts,
+        std::size_t activeOffset,
+        std::size_t samplesPerActiveLine,
+        std::size_t requiredLineCount) {
+    if (video.empty() || syncStarts.empty() || requiredLineCount == 0) {
+        return static_cast<std::size_t>(-1);
+    }
+
+    const auto activeEnd = activeOffset + samplesPerActiveLine;
+    std::size_t usableSyncCount = 0;
+    for (std::size_t index = 0; index < syncStarts.size(); ++index) {
+        if (syncStarts[index] + activeEnd <= video.size()) {
+            usableSyncCount = index + 1U;
+            continue;
+        }
+
+        if (syncStarts[index] >= video.size()) {
+            break;
+        }
+    }
+
+    if (usableSyncCount < requiredLineCount) {
+        return static_cast<std::size_t>(-1);
+    }
+    return usableSyncCount - requiredLineCount;
+}
+
+}  // namespace
 
 const char* videoStandardName(VideoStandard standard) {
     switch (standard) {
@@ -333,6 +365,16 @@ std::size_t FrameAssembler::chooseInterlacedStartSyncIndex(
         return 0;
     }
 
+    const auto maxUsableStart = maxUsableStartSyncIndexForActiveLines(
+            video,
+            syncStarts,
+            activeOffset,
+            samplesPerActiveLine,
+            sourceLineCount);
+    if (maxUsableStart == static_cast<std::size_t>(-1)) {
+        return 0;
+    }
+
     constexpr auto kNoFrameSyncStart = static_cast<std::size_t>(-1);
     const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
             video,
@@ -344,17 +386,11 @@ std::size_t FrameAssembler::chooseInterlacedStartSyncIndex(
         return frameSyncStart;
     }
 
-    const auto requiredSyncSpan = sourceLineCount - 1U;
-    if (syncStarts.size() <= requiredSyncSpan) {
-        return 0;
-    }
-
     std::size_t bestStart = 0;
     double bestScore = -1.0;
-    const auto maxStart = syncStarts.size() - requiredSyncSpan;
     std::vector<double> activities;
     activities.reserve(sourceLineCount);
-    for (std::size_t candidate = 0; candidate < maxStart; ++candidate) {
+    for (std::size_t candidate = 0; candidate <= maxUsableStart; ++candidate) {
         activities.clear();
         double activitySum = 0.0;
         for (std::size_t line = 0; line < sourceLineCount; ++line) {
@@ -402,9 +438,15 @@ std::size_t FrameAssembler::chooseInterlacedStartFromFrameSync(
     }
 
     const auto sourceLineCount = interlacedSourceLineCount();
-    const auto maxUsableStart = syncStarts.size() > sourceLineCount
-            ? syncStarts.size() - sourceLineCount
-            : 0U;
+    const auto maxUsableStart = maxUsableStartSyncIndexForActiveLines(
+            video,
+            syncStarts,
+            activeOffset,
+            samplesPerActiveLine,
+            sourceLineCount);
+    if (maxUsableStart == static_cast<std::size_t>(-1)) {
+        return static_cast<std::size_t>(-1);
+    }
     auto bestStart = static_cast<std::size_t>(-1);
     double bestScore = -1.0;
     for (const auto frameEdge : frameSyncEdges) {
@@ -453,13 +495,20 @@ std::size_t FrameAssembler::chooseInterlacedStartFromVerticalBlanking(
 
     constexpr std::size_t kWindowLines = 8;
     constexpr std::size_t kPostBlankingGuardLines = 4;
-    if (syncStarts.size() <= kWindowLines + kPostBlankingGuardLines + sourceLineCount) {
+    const auto maxUsableStart = maxUsableStartSyncIndexForActiveLines(
+            video,
+            syncStarts,
+            activeOffset,
+            samplesPerActiveLine,
+            sourceLineCount);
+    if (maxUsableStart == static_cast<std::size_t>(-1) ||
+        maxUsableStart <= kWindowLines + kPostBlankingGuardLines) {
         return static_cast<std::size_t>(-1);
     }
 
     std::size_t bestWindowStart = 0;
     double bestScore = -1.0;
-    const auto maxWindowStart = syncStarts.size() - kWindowLines - kPostBlankingGuardLines - sourceLineCount;
+    const auto maxWindowStart = maxUsableStart - kWindowLines - kPostBlankingGuardLines;
     for (std::size_t candidate = 0; candidate <= maxWindowStart; ++candidate) {
         double meanSum = 0.0;
         double activitySum = 0.0;
@@ -524,9 +573,15 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
             continue;
         }
         const auto edgeSyncIndex = static_cast<std::size_t>(std::distance(syncStarts.begin(), edgeSync));
-        const auto maxUsableStart = syncStarts.size() > sourceLineCount
-                ? syncStarts.size() - sourceLineCount
-                : 0U;
+        const auto maxUsableStart = maxUsableStartSyncIndexForActiveLines(
+                video,
+                syncStarts,
+                activeOffset,
+                samplesPerActiveLine,
+                sourceLineCount);
+        if (maxUsableStart == static_cast<std::size_t>(-1)) {
+            continue;
+        }
         const auto activeStartSyncIndex = chooseActiveStartNearFieldSync(
                 video,
                 syncStarts,

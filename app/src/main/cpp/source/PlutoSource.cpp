@@ -1,7 +1,6 @@
 #include "PlutoSource.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
@@ -10,7 +9,6 @@
 #include <memory>
 #include <sstream>
 #include <utility>
-#include <thread>
 
 #ifdef SDRVIDEOSCANNER_HAVE_LIBIIO
 #if __has_include(<iio/iio.h>)
@@ -84,14 +82,6 @@ namespace sdr {
             return diagnostic.str();
         }
 
-// CRITICAL FOR TEZUKA: Restart iiod to force CS8 mode
-        bool restartIiod() {
-            system("killall iiod 2>/dev/null || true");
-            system("pkill -9 iiod 2>/dev/null || true");
-            std::this_thread::sleep_for(std::chrono::milliseconds(800));
-            return true;
-        }
-
         bool writeLongLongAttr(iio_channel* channel, const char* name, long long value) {
             if (channel == nullptr) return false;
             const auto* attr = iio_channel_find_attr(channel, name);
@@ -99,18 +89,6 @@ namespace sdr {
         }
 
         bool writeStringAttr(iio_channel* channel, const char* name, const char* value) {
-            if (channel == nullptr) return false;
-            const auto* attr = iio_channel_find_attr(channel, name);
-            return attr != nullptr && iio_attr_write_string(attr, value) >= 0;
-        }
-
-        bool writeDeviceStringAttr(iio_device* device, const char* name, const char* value) {
-            if (device == nullptr) return false;
-            const auto* attr = iio_device_find_attr(device, name);
-            return attr != nullptr && iio_attr_write_string(attr, value) >= 0;
-        }
-
-        bool writeOptionalStringAttr(iio_channel* channel, const char* name, const char* value) {
             if (channel == nullptr) return false;
             const auto* attr = iio_channel_find_attr(channel, name);
             return attr != nullptr && iio_attr_write_string(attr, value) >= 0;
@@ -156,7 +134,6 @@ namespace sdr {
 
         struct PayloadLayout {
             std::size_t bytesPerIqPair = 0;
-            bool cs8RequestUsingCs16Payload = false;
         };
 
         PayloadLayout choosePayloadLayout(
@@ -165,23 +142,23 @@ namespace sdr {
                 std::size_t payloadBytes,
                 std::size_t requestedBlockSamples) {
             if (!requestedCs8) {
-                return PayloadLayout{kCs16BytesPerIqPair, false};
+                return PayloadLayout{kCs16BytesPerIqPair};
             }
 
             if (requestedBlockSamples > 0) {
                 if (payloadBytes == requestedBlockSamples * kCs8BytesPerIqPair) {
-                    return PayloadLayout{kCs8BytesPerIqPair, false};
+                    return PayloadLayout{kCs8BytesPerIqPair};
                 }
                 if (payloadBytes == requestedBlockSamples * kCs16BytesPerIqPair) {
-                    return PayloadLayout{kCs16BytesPerIqPair, true};
+                    return PayloadLayout{kCs16BytesPerIqPair};
                 }
             }
 
             if (configuredStrideBytes == kCs8BytesPerIqPair) {
-                return PayloadLayout{kCs8BytesPerIqPair, false};
+                return PayloadLayout{kCs8BytesPerIqPair};
             }
             if (configuredStrideBytes == kCs16BytesPerIqPair) {
-                return PayloadLayout{kCs16BytesPerIqPair, true};
+                return PayloadLayout{kCs16BytesPerIqPair};
             }
 
             return {};
@@ -201,6 +178,10 @@ namespace sdr {
         iio_channels_mask* channelsMask = nullptr;
         iio_buffer* rxBuffer = nullptr;
         iio_stream* stream = nullptr;
+        const iio_block* currentBlock = nullptr;
+        const char* currentPtr = nullptr;
+        const char* currentEnd = nullptr;
+        std::size_t currentStepBytes = 0;
         std::size_t sampleStrideBytes = 0;
         std::size_t requestedBlockSamples = 0;
 #endif
@@ -231,10 +212,6 @@ namespace sdr {
 
         const bool useEightBitSamples = (config_.sampleEncoding == SampleEncoding::Cs8);
 
-        if (useEightBitSamples) {
-            restartIiod();
-        }
-
         auto* logFile = tmpfile();
         iio_context_params params = {};
         params.err = logFile;
@@ -264,17 +241,9 @@ namespace sdr {
         impl_->rxI = findFirstChannel(impl_->rx, "voltage0", "voltage0_i");
         impl_->rxQ = findFirstChannel(impl_->rx, "voltage1", "voltage0_q");
 
-        if (!impl_->rxI || !impl_->rxQ) {
+        if (!impl_->rxI || (!useEightBitSamples && !impl_->rxQ)) {
             close();
             return makeStatus(SampleSourceError::OpenFailed, "I/Q channels not found");
-        }
-
-        if (useEightBitSamples) {
-            writeDeviceStringAttr(impl_->rx, "format", "s8/8");
-            writeOptionalStringAttr(impl_->rxI, "scan_element/type", "le:s8/8>>0");
-            writeOptionalStringAttr(impl_->rxQ, "scan_element/type", "le:s8/8>>0");
-            writeOptionalStringAttr(impl_->rxI, "raw", "1");
-            writeOptionalStringAttr(impl_->rxQ, "raw", "1");
         }
 
         auto* phyI = iio_device_find_channel(impl_->phy, "voltage0", false);
@@ -294,7 +263,13 @@ namespace sdr {
 
         impl_->channelsMask = iio_create_channels_mask(iio_device_get_channels_count(impl_->rx));
         iio_channel_enable(impl_->rxI, impl_->channelsMask);
-        iio_channel_enable(impl_->rxQ, impl_->channelsMask);
+        if (useEightBitSamples) {
+            if (impl_->rxQ != nullptr) {
+                iio_channel_disable(impl_->rxQ, impl_->channelsMask);
+            }
+        } else {
+            iio_channel_enable(impl_->rxQ, impl_->channelsMask);
+        }
 
         const auto sampleSize = iio_device_get_sample_size(impl_->rx, impl_->channelsMask);
         if (sampleSize <= 0) {
@@ -341,7 +316,9 @@ namespace sdr {
         message << "Opened (CS" << (useEightBitSamples ? 8 : 16)
                 << ", buffer_samples=" << bufferSamples
                 << ", stream_blocks=" << streamBlockCount
-                << ", configured_iq_stride_bytes=" << impl_->sampleStrideBytes << ")";
+                << ", configured_iq_stride_bytes=" << impl_->sampleStrideBytes
+                << ", channel_mode=" << (useEightBitSamples ? "tezuka_single_voltage0_packed_iq" : "voltage0_voltage1")
+                << ")";
         return makeStatus(SampleSourceError::None, message.str());
 #endif
     }
@@ -357,6 +334,10 @@ namespace sdr {
             iio_channels_mask_destroy(impl_->channelsMask);
             impl_->channelsMask = nullptr;
         }
+        impl_->currentBlock = nullptr;
+        impl_->currentPtr = nullptr;
+        impl_->currentEnd = nullptr;
+        impl_->currentStepBytes = 0;
         impl_->sampleStrideBytes = 0;
         impl_->requestedBlockSamples = 0;
         impl_->rxI = impl_->rxQ = nullptr;
@@ -390,68 +371,80 @@ namespace sdr {
             return makeReadResult(0, false, SampleSourceError::NotOpen, "Not open");
         }
 
-        const auto* block = iio_stream_get_next_block(impl_->stream);
-        const auto blockError = iio_err(block);
-        if (!block || blockError != 0) {
-            return makeReadResult(
-                    0,
-                    false,
-                    SampleSourceError::ReadFailed,
-                    "iio_stream_get_next_block failed: " +
-                            (blockError == 0 ? std::string("unknown error")
-                                             : iioErrorMessage(blockError)));
+        if (maxSamples == 0) {
+            return makeReadResult(0, false, SampleSourceError::None, {});
         }
 
-        const auto* ptr = static_cast<const char*>(iio_block_first(block, impl_->rxI));
-        const auto* end = static_cast<const char*>(iio_block_end(block));
-        if (!ptr || !end || ptr >= end) {
-            return makeReadResult(0, false, SampleSourceError::ReadFailed, "Empty block");
-        }
-
-        const auto payloadBytes = static_cast<std::size_t>(end - ptr);
         if (impl_->sampleStrideBytes == 0) {
             return makeReadResult(0, false, SampleSourceError::ReadFailed, "Invalid Pluto sample stride");
         }
 
         const bool isCs8 = (config_.sampleEncoding == SampleEncoding::Cs8);
-        const auto layout = choosePayloadLayout(
-                isCs8,
-                impl_->sampleStrideBytes,
-                payloadBytes,
-                impl_->requestedBlockSamples);
-        const auto step = layout.bytesPerIqPair;
-        if (step == 0 || payloadBytes < step) {
-            return makeReadResult(
-                    0,
-                    false,
-                    SampleSourceError::ReadFailed,
-                    "Unsupported Pluto IQ payload layout");
-        }
+        buffer.resizeSamples(maxSamples);
 
-        const auto available = payloadBytes / step;
-        const auto samplesToCopy = std::min(maxSamples, available);
-
-        buffer.resizeSamples(samplesToCopy);
-
-        for (std::size_t i = 0; i < samplesToCopy && ptr < end; ++i, ptr += step) {
-            if (isCs8) {
-                if (layout.cs8RequestUsingCs16Payload) {
-                    const auto* iq = reinterpret_cast<const std::int8_t*>(ptr);
-                    buffer.data()[i * 2]     = static_cast<std::int16_t>(iq[1]) << 8;
-                    buffer.data()[i * 2 + 1] = static_cast<std::int16_t>(iq[3]) << 8;
-                } else {
-                    const auto* iq = reinterpret_cast<const std::int8_t*>(ptr);
-                    buffer.data()[i * 2]     = static_cast<std::int16_t>(iq[0]) << 8;
-                    buffer.data()[i * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
+        std::size_t samplesCopied = 0;
+        while (samplesCopied < maxSamples) {
+            if (impl_->currentPtr == nullptr ||
+                impl_->currentEnd == nullptr ||
+                impl_->currentPtr + impl_->currentStepBytes > impl_->currentEnd) {
+                impl_->currentBlock = iio_stream_get_next_block(impl_->stream);
+                const auto blockError = iio_err(impl_->currentBlock);
+                if (!impl_->currentBlock || blockError != 0) {
+                    buffer.resizeSamples(samplesCopied);
+                    return makeReadResult(
+                            samplesCopied,
+                            false,
+                            SampleSourceError::ReadFailed,
+                            "iio_stream_get_next_block failed: " +
+                                    (blockError == 0 ? std::string("unknown error")
+                                                     : iioErrorMessage(blockError)));
                 }
-            } else {
-                const auto* iq = reinterpret_cast<const std::int16_t*>(ptr);
-                buffer.data()[i * 2]     = iq[0];
-                buffer.data()[i * 2 + 1] = iq[1];
+
+                impl_->currentPtr = static_cast<const char*>(iio_block_first(impl_->currentBlock, impl_->rxI));
+                impl_->currentEnd = static_cast<const char*>(iio_block_end(impl_->currentBlock));
+                if (!impl_->currentPtr || !impl_->currentEnd || impl_->currentPtr >= impl_->currentEnd) {
+                    buffer.resizeSamples(samplesCopied);
+                    return makeReadResult(
+                            samplesCopied,
+                            false,
+                            SampleSourceError::ReadFailed,
+                            "Empty block");
+                }
+
+                const auto payloadBytes = static_cast<std::size_t>(impl_->currentEnd - impl_->currentPtr);
+                const auto layout = choosePayloadLayout(
+                        isCs8,
+                        impl_->sampleStrideBytes,
+                        payloadBytes,
+                        impl_->requestedBlockSamples);
+                impl_->currentStepBytes = layout.bytesPerIqPair;
+                if (impl_->currentStepBytes == 0 || payloadBytes < impl_->currentStepBytes) {
+                    buffer.resizeSamples(samplesCopied);
+                    impl_->currentPtr = nullptr;
+                    impl_->currentEnd = nullptr;
+                    impl_->currentStepBytes = 0;
+                    return makeReadResult(
+                            samplesCopied,
+                            false,
+                            SampleSourceError::ReadFailed,
+                            "Unsupported Pluto IQ payload layout");
+                }
             }
+
+            if (isCs8) {
+                const auto* iq = reinterpret_cast<const std::int8_t*>(impl_->currentPtr);
+                buffer.data()[samplesCopied * 2]     = static_cast<std::int16_t>(iq[0]) << 8;
+                buffer.data()[samplesCopied * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
+            } else {
+                const auto* iq = reinterpret_cast<const std::int16_t*>(impl_->currentPtr);
+                buffer.data()[samplesCopied * 2]     = iq[0];
+                buffer.data()[samplesCopied * 2 + 1] = iq[1];
+            }
+            ++samplesCopied;
+            impl_->currentPtr += impl_->currentStepBytes;
         }
 
-        return makeReadResult(samplesToCopy, false, SampleSourceError::None, {});
+        return makeReadResult(samplesCopied, false, SampleSourceError::None, {});
     }
 
 } // namespace sdr

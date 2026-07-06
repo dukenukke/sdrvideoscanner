@@ -787,27 +787,77 @@ double playbackFrameRateForStandard(sdr::VideoStandard standard) {
     }
 }
 
-void configurePlaybackDecoder(AnalogPlaybackSession& session) {
+sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard standard,
+        double playbackFrameRateHz,
+        const std::string& sessionKind) {
     sdr::AnalogVideoDecoderConfig config;
-    config.sampleRateHz = session.sampleRateHz;
-    const bool isWebSocketCs8Live = session.sessionKind == "pluto_websocket_cs8_live";
-    config.analysisRateHz = isWebSocketCs8Live
+    config.sampleRateHz = sampleRateHz;
+    const bool isIioCs8Live = sessionKind == "pluto_iio_usb_cs8_live";
+    const bool isCs8Live = sessionKind == "pluto_websocket_cs8_live" ||
+            isIioCs8Live;
+    config.analysisRateHz = isCs8Live
             ? kWebSocketCs8PlaybackAnalysisRateHz
             : kDefaultPlaybackAnalysisRateHz;
-    config.cutoffHz = isWebSocketCs8Live
+    config.cutoffHz = isCs8Live
             ? kWebSocketCs8PlaybackVideoCutoffHz
             : kDefaultPlaybackVideoCutoffHz;
-    config.readBlockSamples = isLivePlaybackSourceKind(session.sessionKind)
+    config.readBlockSamples = isLivePlaybackSourceKind(sessionKind)
             ? kLivePlaybackReadBlockSamples
             : kFilePlaybackReadBlockSamples;
-    config.fastFieldPreview = true;
-    config.detectFrameSyncInFastPreview = true;
-    config.fastPreviewFieldStride = 2;
-    config.timing = sdr::timingForStandard(session.standard);
-    if (session.playbackFrameRateHz > 0.0) {
-        config.timing.frameRateHz = session.playbackFrameRateHz;
+    config.fastFieldPreview = !isIioCs8Live;
+    config.detectFrameSyncInFastPreview = !isIioCs8Live;
+    config.fastPreviewFieldStride = isIioCs8Live ? 1U : 2U;
+    config.liveFrameReadMultiplier = isIioCs8Live ? 2.0 : 1.0;
+    config.timing = sdr::timingForStandard(standard);
+    if (playbackFrameRateHz > 0.0) {
+        config.timing.frameRateHz = playbackFrameRateHz;
     }
+    return config;
+}
+
+void configurePlaybackDecoder(AnalogPlaybackSession& session) {
+    auto config = makePlaybackDecoderConfig(
+            session.sampleRateHz,
+            session.standard,
+            session.playbackFrameRateHz,
+            session.sessionKind);
     session.decoder = std::make_unique<sdr::AnalogVideoDecoder>(config);
+}
+
+sdr::VideoFrame decodeLivePlaybackProbeFrame(
+        sdr::ISampleSource& source,
+        std::uint64_t sampleRateHz,
+        sdr::VideoStandard standard,
+        const std::string& sessionKind) {
+    auto config = makePlaybackDecoderConfig(
+            sampleRateHz,
+            standard,
+            playbackFrameRateForStandard(standard),
+            sessionKind);
+    sdr::AnalogVideoDecoder decoder(config);
+    return decoder.decodeOneFrame(source);
+}
+
+sdr::VideoStandard chooseLivePlaybackStandard(
+        sdr::ISampleSource& source,
+        std::uint64_t sampleRateHz,
+        const std::string& sessionKind) {
+    const auto palFrame = decodeLivePlaybackProbeFrame(
+            source,
+            sampleRateHz,
+            sdr::VideoStandard::PAL625_25FPS,
+            sessionKind);
+    const auto ntscFrame = decodeLivePlaybackProbeFrame(
+            source,
+            sampleRateHz,
+            sdr::VideoStandard::NTSC_525_30FPS,
+            sessionKind);
+
+    return shouldSelectNtscForAuto(palFrame, ntscFrame)
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : sdr::VideoStandard::PAL625_25FPS;
 }
 
 sdr::VideoFrame decodeAnalogVideoFrameForStandard(
@@ -1005,12 +1055,14 @@ AnalogPlaybackSession* createPlutoPlaybackSession(
 
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
+    session->sessionKind = sampleEncoding == sdr::SampleEncoding::Cs8
+            ? "pluto_iio_usb_cs8_live"
+            : "pluto_usb_live";
     session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? sdr::VideoStandard::NTSC_525_30FPS
+            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
             : requestedStandard;
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
-    session->sessionKind = "pluto_usb_live";
     session->source = std::move(source);
     configurePlaybackDecoder(*session);
     return session.release();
@@ -1104,12 +1156,12 @@ AnalogPlaybackSession* createMaiaPlaybackSession(
 
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
+    session->sessionKind = "maia_http_cs8_live";
     session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? sdr::VideoStandard::NTSC_525_30FPS
+            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
             : requestedStandard;
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
-    session->sessionKind = "maia_http_cs8_live";
     session->source = std::move(source);
     configurePlaybackDecoder(*session);
     return session.release();
@@ -1219,12 +1271,12 @@ AnalogPlaybackSession* createPlutoWebSocketPlaybackSession(
 
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
+    session->sessionKind = "pluto_websocket_cs8_live";
     session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? sdr::VideoStandard::NTSC_525_30FPS
+            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
             : requestedStandard;
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
-    session->sessionKind = "pluto_websocket_cs8_live";
     session->source = std::move(source);
     configurePlaybackDecoder(*session);
     return session.release();
@@ -1334,6 +1386,7 @@ sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
                 << "; playback_frame_rate_hz=" << session.playbackFrameRateHz
                 << "; playback_frame_index=" << session.frameIndex;
         if (session.sessionKind == "pluto_usb_live" ||
+            session.sessionKind == "pluto_iio_usb_cs8_live" ||
             session.sessionKind == "pluto_websocket_cs8_live") {
             message << "; live_auto_standard="
                     << (session.standard == sdr::VideoStandard::NTSC_525_30FPS ? "NTSC525" : "PAL625");
