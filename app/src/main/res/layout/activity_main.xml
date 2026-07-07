@@ -116,6 +116,33 @@
     </FrameLayout>
 
     <LinearLayout
+        android:id="@+id/channel_step_controls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <Button
+            android:id="@+id/prev_channel_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1"
+            tools:text="- 5.917 GHz" />
+
+        <Button
+            android:id="@+id/next_channel_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            tools:text="+ 5.945 GHz" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/video_controls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -156,7 +183,7 @@
             android:paddingStart="8dp"
             android:paddingEnd="8dp"
             android:paddingBottom="12dp"
-            android:textIsSelectable="true"
+            android:textIsSelectable="false"
             tools:text="CS16 diagnostics appear here" />
     </ScrollView>
 </LinearLayout>

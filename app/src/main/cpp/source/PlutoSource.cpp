@@ -39,6 +39,7 @@ namespace sdr {
                 sizeof(std::int8_t) * SampleBuffer::kValuesPerIqSample;
         constexpr std::size_t kCs16BytesPerIqPair =
                 sizeof(std::int16_t) * SampleBuffer::kValuesPerIqSample;
+        constexpr int kIpIioTimeoutMs = 3000;
 
         std::string iioErrorMessage(int error) {
             char message[160] = {};
@@ -219,6 +220,7 @@ namespace sdr {
         params.log_level = LEVEL_DEBUG;
         params.stderr_level = LEVEL_DEBUG;
         params.timestamp_level = LEVEL_NOLOG;
+        params.timeout_ms = isIpUri(config_.uri) ? kIpIioTimeoutMs : IIO_TIMEOUT_BACKEND;
 
         impl_->context = iio_create_context(logFile == nullptr ? nullptr : &params, config_.uri.c_str());
         const auto contextError = iio_err(impl_->context);
@@ -227,6 +229,9 @@ namespace sdr {
             const auto message = iioContextErrorMessage(config_.uri, contextError, libiioLog);
             impl_->context = nullptr;
             return makeStatus(SampleSourceError::OpenFailed, "iio_create_context failed: " + message);
+        }
+        if (isIpUri(config_.uri)) {
+            iio_context_set_timeout(impl_->context, kIpIioTimeoutMs);
         }
         impl_->contextLog = logFile;
 
@@ -431,17 +436,40 @@ namespace sdr {
                 }
             }
 
-            if (isCs8) {
-                const auto* iq = reinterpret_cast<const std::int8_t*>(impl_->currentPtr);
-                buffer.data()[samplesCopied * 2]     = static_cast<std::int16_t>(iq[0]) << 8;
-                buffer.data()[samplesCopied * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
-            } else {
-                const auto* iq = reinterpret_cast<const std::int16_t*>(impl_->currentPtr);
-                buffer.data()[samplesCopied * 2]     = iq[0];
-                buffer.data()[samplesCopied * 2 + 1] = iq[1];
+            const auto availableInBlock =
+                    static_cast<std::size_t>(impl_->currentEnd - impl_->currentPtr) /
+                    impl_->currentStepBytes;
+            const auto samplesToCopy = std::min(maxSamples - samplesCopied, availableInBlock);
+            if (samplesToCopy == 0) {
+                impl_->currentPtr = nullptr;
+                impl_->currentEnd = nullptr;
+                impl_->currentStepBytes = 0;
+                continue;
             }
-            ++samplesCopied;
-            impl_->currentPtr += impl_->currentStepBytes;
+
+            auto* output = buffer.data() + (samplesCopied * SampleBuffer::kValuesPerIqSample);
+            auto* ptr = impl_->currentPtr;
+            if (isCs8) {
+                for (std::size_t i = 0; i < samplesToCopy; ++i, ptr += impl_->currentStepBytes) {
+                    const auto* iq = reinterpret_cast<const std::int8_t*>(ptr);
+                    output[i * 2] = static_cast<std::int16_t>(iq[0]) << 8;
+                    output[i * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
+                }
+            } else if (impl_->currentStepBytes == kCs16BytesPerIqPair) {
+                std::copy_n(
+                        reinterpret_cast<const std::int16_t*>(ptr),
+                        samplesToCopy * SampleBuffer::kValuesPerIqSample,
+                        output);
+                ptr += samplesToCopy * impl_->currentStepBytes;
+            } else {
+                for (std::size_t i = 0; i < samplesToCopy; ++i, ptr += impl_->currentStepBytes) {
+                    const auto* iq = reinterpret_cast<const std::int16_t*>(ptr);
+                    output[i * 2] = iq[0];
+                    output[i * 2 + 1] = iq[1];
+                }
+            }
+            samplesCopied += samplesToCopy;
+            impl_->currentPtr = ptr;
         }
 
         return makeReadResult(samplesCopied, false, SampleSourceError::None, {});

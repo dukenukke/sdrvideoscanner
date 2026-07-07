@@ -35,7 +35,7 @@ namespace {
 constexpr std::size_t kDiagnosticBlockSamples = 4096;
 constexpr std::size_t kFilePlaybackReadBlockSamples = 262144;
 constexpr std::size_t kLivePlaybackReadBlockSamples = 32768;
-constexpr std::size_t kPlutoLivePlaybackBufferSamples = 32768;
+constexpr std::size_t kPlutoLivePlaybackBufferSamples = 262144;
 constexpr std::size_t kPlutoLiveSpectrumBufferSamples = 1024;
 constexpr std::size_t kPlutoLiveStreamBlockCount = 4;
 constexpr std::size_t kPlutoCaptureBufferSamples = 32768;
@@ -806,10 +806,10 @@ sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
     config.readBlockSamples = isLivePlaybackSourceKind(sessionKind)
             ? kLivePlaybackReadBlockSamples
             : kFilePlaybackReadBlockSamples;
-    config.fastFieldPreview = !isIioCs8Live;
-    config.detectFrameSyncInFastPreview = !isIioCs8Live;
-    config.fastPreviewFieldStride = isIioCs8Live ? 1U : 2U;
-    config.liveFrameReadMultiplier = isIioCs8Live ? 2.0 : 1.0;
+    config.fastFieldPreview = true;
+    config.detectFrameSyncInFastPreview = true;
+    config.fastPreviewFieldStride = 2U;
+    config.liveFrameReadMultiplier = 1.0;
     config.timing = sdr::timingForStandard(standard);
     if (playbackFrameRateHz > 0.0) {
         config.timing.frameRateHz = playbackFrameRateHz;
@@ -858,6 +858,14 @@ sdr::VideoStandard chooseLivePlaybackStandard(
     return shouldSelectNtscForAuto(palFrame, ntscFrame)
             ? sdr::VideoStandard::NTSC_525_30FPS
             : sdr::VideoStandard::PAL625_25FPS;
+}
+
+sdr::VideoStandard livePlaybackStandardOrDefault(sdr::VideoStandard requestedStandard) {
+    // Match the known-good CS8 live path from feature/cs8_iq_scan.
+    // Explicit user selections can still override this later.
+    return requestedStandard == sdr::VideoStandard::AUTO
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : requestedStandard;
 }
 
 sdr::VideoFrame decodeAnalogVideoFrameForStandard(
@@ -1058,9 +1066,7 @@ AnalogPlaybackSession* createPlutoPlaybackSession(
     session->sessionKind = sampleEncoding == sdr::SampleEncoding::Cs8
             ? "pluto_iio_usb_cs8_live"
             : "pluto_usb_live";
-    session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
-            : requestedStandard;
+    session->standard = livePlaybackStandardOrDefault(requestedStandard);
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
     session->source = std::move(source);
@@ -1157,9 +1163,7 @@ AnalogPlaybackSession* createMaiaPlaybackSession(
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
     session->sessionKind = "maia_http_cs8_live";
-    session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
-            : requestedStandard;
+    session->standard = livePlaybackStandardOrDefault(requestedStandard);
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
     session->source = std::move(source);
@@ -1272,9 +1276,7 @@ AnalogPlaybackSession* createPlutoWebSocketPlaybackSession(
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
     session->sessionKind = "pluto_websocket_cs8_live";
-    session->standard = requestedStandard == sdr::VideoStandard::AUTO
-            ? chooseLivePlaybackStandard(*source, sampleRateHz, session->sessionKind)
-            : requestedStandard;
+    session->standard = livePlaybackStandardOrDefault(requestedStandard);
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->loopAtEndOfStream = false;
     session->source = std::move(source);

@@ -351,16 +351,6 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
         return candidateStartSyncIndex;
     }
 
-    if (config_.detectFrameSyncInFastPreview) {
-        const auto sourceLineCount = static_cast<std::size_t>((config_.timing.visibleLines + 1U) / 2U);
-        const auto maxUsableStart = detectedSyncCount > sourceLineCount
-                ? detectedSyncCount - sourceLineCount
-                : 0U;
-        fastFieldStartSyncIndex_ = std::min(candidateStartSyncIndex, maxUsableStart);
-        fastFieldStartLocked_ = true;
-        return fastFieldStartSyncIndex_;
-    }
-
     const auto sourceLineCount = static_cast<std::size_t>((config_.timing.visibleLines + 1U) / 2U);
     const auto maxUsableStart = detectedSyncCount > sourceLineCount
             ? detectedSyncCount - sourceLineCount
@@ -369,7 +359,9 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
 
     if (!fastFieldStartLocked_) {
         fastFieldStartSyncIndex_ = boundedCandidate;
+        pendingFastFieldStartSyncIndex_ = boundedCandidate;
         fastFieldStartLocked_ = true;
+        fastFieldStartRejectCount_ = 0;
         return fastFieldStartSyncIndex_;
     }
 
@@ -396,11 +388,44 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
         }
     }
 
-    constexpr auto kMaxAcceptedStartCorrection = static_cast<std::size_t>(8U);
+    constexpr auto kStartCorrectionDeadband = static_cast<long long>(6);
+    constexpr auto kMaxAcceptedStartCorrection = static_cast<long long>(8);
+    constexpr auto kMaxCorrectionStep = static_cast<long long>(1);
+    constexpr auto kRelockCorrection = static_cast<long long>(9);
+    constexpr auto kStableRejectedCandidateWindow = static_cast<long long>(2);
+    constexpr auto kRejectedCorrectionsBeforeRelock = static_cast<std::size_t>(6U);
     const auto delta = std::abs(static_cast<long long>(nearestCandidate) -
                                 static_cast<long long>(fastFieldStartSyncIndex_));
-    if (delta <= static_cast<long long>(kMaxAcceptedStartCorrection)) {
-        fastFieldStartSyncIndex_ = std::min(nearestCandidate, maxUsableStart);
+    if (delta <= kStartCorrectionDeadband) {
+        fastFieldStartRejectCount_ = 0;
+        pendingFastFieldStartSyncIndex_ = nearestCandidate;
+    } else if (delta <= kMaxAcceptedStartCorrection) {
+        fastFieldStartRejectCount_ = 0;
+        pendingFastFieldStartSyncIndex_ = nearestCandidate;
+        const auto current = static_cast<long long>(fastFieldStartSyncIndex_);
+        const auto target = static_cast<long long>(nearestCandidate);
+        if (target > current) {
+            fastFieldStartSyncIndex_ = std::min<std::size_t>(
+                    static_cast<std::size_t>(current + std::min(delta, kMaxCorrectionStep)),
+                    maxUsableStart);
+        } else if (target < current) {
+            fastFieldStartSyncIndex_ = static_cast<std::size_t>(
+                    current - std::min(delta, kMaxCorrectionStep));
+        }
+    } else if (delta >= kRelockCorrection) {
+        const auto rejectedDelta = std::abs(static_cast<long long>(nearestCandidate) -
+                                            static_cast<long long>(pendingFastFieldStartSyncIndex_));
+        if (rejectedDelta <= kStableRejectedCandidateWindow) {
+            ++fastFieldStartRejectCount_;
+        } else {
+            pendingFastFieldStartSyncIndex_ = nearestCandidate;
+            fastFieldStartRejectCount_ = 1;
+        }
+        if (fastFieldStartRejectCount_ >= kRejectedCorrectionsBeforeRelock) {
+            fastFieldStartSyncIndex_ = std::min(nearestCandidate, maxUsableStart);
+            pendingFastFieldStartSyncIndex_ = fastFieldStartSyncIndex_;
+            fastFieldStartRejectCount_ = 0;
+        }
     }
 
     return fastFieldStartSyncIndex_;

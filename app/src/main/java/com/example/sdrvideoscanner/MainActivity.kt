@@ -48,12 +48,14 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
@@ -83,6 +85,8 @@ class MainActivity : AppCompatActivity() {
     private var spectrumFrameIndex = 0L
     private var liveUsbConnection: UsbDeviceConnection? = null
     private var spectrumUsbConnection: UsbDeviceConnection? = null
+    private var playbackPreviousBoundNetwork: Network? = null
+    private var playbackBoundNetwork: Network? = null
     private var reusableFramePixels = IntArray(0)
     private var pendingPlutoCapturePath: String? = null
     private var pendingPlutoUsbAction: PlutoUsbAction? = null
@@ -124,6 +128,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     PlutoUsbAction.LIVE_PLAYBACK -> startPlutoUsbPlayback(device, standard, config)
+                    PlutoUsbAction.IP_IIO_PLAYBACK -> startPlutoIpIioPlayback(standard, config)
                     PlutoUsbAction.SPECTRUM_VIEW -> startPlutoUsbSpectrum(device, config)
                     PlutoUsbAction.WEB_SOCKET_PLAYBACK -> startPlutoWebSocketPlayback(standard, config)
                     PlutoUsbAction.WEB_SOCKET_SPECTRUM -> startPlutoWebSocketSpectrum(config)
@@ -201,8 +206,15 @@ class MainActivity : AppCompatActivity() {
         binding.nextButton.setOnClickListener {
             skipCurrentSignalAndResumeScan()
         }
+        binding.prevChannelButton.setOnClickListener {
+            retunePlaybackToAdjacentChannel(-1)
+        }
+        binding.nextChannelButton.setOnClickListener {
+            retunePlaybackToAdjacentChannel(1)
+        }
         updateCurrentFrequencyLabel(plutoIqConfig.centerFrequencyHz)
         binding.videoFrameContainer.visibility = View.GONE
+        binding.channelStepControls.visibility = View.GONE
         renderSignalTable()
         updateScannerUi()
     }
@@ -219,8 +231,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMainMenu() {
         PopupMenu(this, binding.mainMenuButton).apply {
-            menu.add(0, MENU_PLAY_PLUTO_IIO_CS8, 0, "Play Pluto IIO CS8")
-            menu.add(0, MENU_PLAY_PLUTO_USB_CS16, 1, "Play Pluto USB CS16")
+            menu.add(0, MENU_PLAY_PLUTO_IIO_CS8, 0, "Play Pluto IP IIO CS8")
+            menu.add(0, MENU_PLAY_PLUTO_USB_CS16, 1, "Play Pluto IP IIO CS16")
             menu.add(0, MENU_STOP, 2, "Stop")
             menu.add(0, MENU_SETUP_IQ, 3, "Setup IQ")
             menu.add(0, MENU_TUNE_FREQUENCY, 4, "Tune Frequency")
@@ -243,15 +255,15 @@ class MainActivity : AppCompatActivity() {
                 stopScannerMode()
                 stopSpectrum()
                 stopPlayback()
-                activeMode = ActiveMode.PLUTO_USB_PLAYBACK
-                preparePlutoUsbPlayback(VideoStandard.AUTO, plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS8))
+                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+                preparePlutoIpIioPlayback(VideoStandard.AUTO, plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS8))
             }
             MENU_PLAY_PLUTO_USB_CS16 -> {
                 stopScannerMode()
                 stopSpectrum()
                 stopPlayback()
-                activeMode = ActiveMode.PLUTO_USB_PLAYBACK
-                preparePlutoUsbPlayback(VideoStandard.AUTO, plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS16))
+                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+                preparePlutoIpIioPlayback(VideoStandard.AUTO, plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS16))
             }
             MENU_STOP -> {
                 stopPlayback()
@@ -303,6 +315,17 @@ class MainActivity : AppCompatActivity() {
         binding.toggleStatsButton.text = if (statsVisible) "Hide Stats" else "Show Stats"
     }
 
+    private fun updateSampleText(text: CharSequence, preserveStatsScroll: Boolean = false) {
+        val previousScrollY = binding.statsScroll.scrollY
+        binding.sampleText.text = text
+        if (preserveStatsScroll && statsVisible) {
+            binding.statsScroll.post {
+                val maxScrollY = (binding.sampleText.height - binding.statsScroll.height).coerceAtLeast(0)
+                binding.statsScroll.scrollTo(binding.statsScroll.scrollX, previousScrollY.coerceAtMost(maxScrollY))
+            }
+        }
+    }
+
     private fun showCenterFrequencyDialog() {
         val inputLayout = TextInputLayout(this).apply {
             hint = "Center frequency Hz"
@@ -345,6 +368,7 @@ class MainActivity : AppCompatActivity() {
         val previousMode = activeMode
         val activePlutoSession = currentPlutoSessionRecovery()
         val restartUsbPlayback = playbackRunning && previousMode == ActiveMode.PLUTO_USB_PLAYBACK
+        val restartIpIioPlayback = playbackRunning && previousMode == ActiveMode.PLUTO_IP_PLAYBACK
         val restartWebSocketPlayback = playbackRunning && previousMode == ActiveMode.PLUTO_WS_PLAYBACK
         val restartSpectrum = spectrumRunning && previousMode == ActiveMode.PLUTO_WS_SPECTRUM
         plutoIqConfig = plutoIqConfig.copy(centerFrequencyHz = frequencyHz)
@@ -358,6 +382,13 @@ class MainActivity : AppCompatActivity() {
                 activeMode = ActiveMode.PLUTO_USB_PLAYBACK
                 binding.sampleText.text = "Center frequency changed to ${formatFrequency(frequencyHz)}.\n\nRestarting Pluto IIO playback."
                 preparePlutoUsbPlayback(activePlutoSession?.standard ?: VideoStandard.AUTO, restartConfig)
+            }
+            restartIpIioPlayback -> {
+                val restartConfig = (activePlutoSession?.config ?: plutoIqConfig).copy(centerFrequencyHz = frequencyHz)
+                stopPlayback()
+                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+                binding.sampleText.text = "Center frequency changed to ${formatFrequency(frequencyHz)}.\n\nRestarting Pluto IP IIO playback."
+                preparePlutoIpIioPlayback(activePlutoSession?.standard ?: VideoStandard.AUTO, restartConfig)
             }
             restartWebSocketPlayback -> {
                 val restartConfig = (activePlutoSession?.config ?: plutoIqConfig).copy(centerFrequencyHz = frequencyHz)
@@ -459,6 +490,7 @@ class MainActivity : AppCompatActivity() {
             "Scan"
         }
         binding.nextButton.isEnabled = selectedPlaybackChannel != null
+        updateChannelStepControls()
         binding.scannerStateLabel.text = buildString {
             append("Scanner: ")
             append(scanController.state.name.lowercase(Locale.US))
@@ -518,16 +550,16 @@ class MainActivity : AppCompatActivity() {
         updateScannerUi()
         decodeExecutor.execute {
             val initialResult = probeChannelForSignal(channel, ScannerProbeProfile.QUICK)
-            val result = if (initialResult.signalPresent) {
+            val confirmed = if (initialResult.signalPresent) {
                 confirmPositiveScanResult(channel, initialResult)
             } else {
-                initialResult
+                ScannerProbeSelection(channel, initialResult)
             }
-            scanController.applyProbeResult(channel, result)
+            scanController.applyProbeResult(confirmed.channel, confirmed.result)
             mainHandler.post {
                 scanController.expireStaleRecords()
                 renderSignalTable()
-                updateLastProbeDiagnostic(channel, result)
+                updateLastProbeDiagnostic(confirmed.channel, confirmed.result)
                 updateScannerUi()
                 if (scannerRunning && selectedPlaybackChannel == null) {
                     scheduleNextScanStep()
@@ -539,29 +571,70 @@ class MainActivity : AppCompatActivity() {
     private fun confirmPositiveScanResult(
         channel: KnownChannel,
         initialResult: SignalProbeResult,
-    ): SignalProbeResult {
+    ): ScannerProbeSelection {
         val confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
-        if (confirmationResult.signalPresent) {
-            return confirmationResult.copy(
+        if (!confirmationResult.signalPresent) {
+            return ScannerProbeSelection(
+                channel = channel,
+                result = initialResult.copy(
+                    signalPresent = false,
+                    signalType = SignalType.UNKNOWN,
+                    rssiDbfs = null,
+                    confidence = minOf(initialResult.confidence, confirmationResult.confidence),
+                    previewFrame = null,
+                    diagnostic = initialResult.diagnostic +
+                        "\nscanner_positive_confirmation: no" +
+                        "\nscanner_initial_confidence: ${String.format(Locale.US, "%.3f", initialResult.confidence)}" +
+                        "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}" +
+                        "\nscanner_confirmation_diagnostic:\n${confirmationResult.diagnostic}",
+                ),
+            )
+        }
+
+        var bestSelection = ScannerProbeSelection(
+            channel = channel,
+            result = confirmationResult.copy(
                 diagnostic = confirmationResult.diagnostic +
                     "\nscanner_positive_confirmation: yes" +
                     "\nscanner_initial_confidence: ${String.format(Locale.US, "%.3f", initialResult.confidence)}" +
                     "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}",
-            )
+            ),
+        )
+
+        for (nearbyChannel in nearbyAnalogChannels(channel)) {
+            val nearbyResult = probeChannelForSignal(nearbyChannel, ScannerProbeProfile.DEEP_CONFIRM)
+            if (!nearbyResult.signalPresent) {
+                continue
+            }
+            if (nearbyResult.imageQuality > bestSelection.result.imageQuality + SCANNER_NEARBY_CHANNEL_Q_SWITCH_MARGIN ||
+                (nearbyResult.imageQuality >= bestSelection.result.imageQuality - SCANNER_NEARBY_CHANNEL_Q_TIE_MARGIN &&
+                    nearbyChannel.centerFrequencyHz > bestSelection.channel.centerFrequencyHz)
+            ) {
+                bestSelection = ScannerProbeSelection(
+                    channel = nearbyChannel,
+                    result = nearbyResult.copy(
+                        diagnostic = nearbyResult.diagnostic +
+                            "\nscanner_positive_confirmation: yes" +
+                            "\nscanner_refined_from_hz: ${channel.centerFrequencyHz}" +
+                            "\nscanner_refined_from_q: ${String.format(Locale.US, "%.3f", confirmationResult.imageQuality)}" +
+                            "\nscanner_refined_selected: yes",
+                    ),
+                )
+            }
         }
 
-        return initialResult.copy(
-            signalPresent = false,
-            signalType = SignalType.UNKNOWN,
-            rssiDbfs = null,
-            confidence = minOf(initialResult.confidence, confirmationResult.confidence),
-            previewFrame = null,
-            diagnostic = initialResult.diagnostic +
-                "\nscanner_positive_confirmation: no" +
-                "\nscanner_initial_confidence: ${String.format(Locale.US, "%.3f", initialResult.confidence)}" +
-                "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}" +
-                "\nscanner_confirmation_diagnostic:\n${confirmationResult.diagnostic}",
-        )
+        return bestSelection
+    }
+
+    private fun nearbyAnalogChannels(channel: KnownChannel): List<KnownChannel> {
+        return ChannelPlan.knownChannels
+            .asSequence()
+            .filter { it !== channel }
+            .filter { it.expectedSignalType == SignalType.ANALOG }
+            .filter { it.rfFrontendProfileId == channel.rfFrontendProfileId }
+            .filter { kotlin.math.abs(it.centerFrequencyHz - channel.centerFrequencyHz) <= SCANNER_NEARBY_CHANNEL_RADIUS_HZ }
+            .sortedBy { kotlin.math.abs(it.centerFrequencyHz - channel.centerFrequencyHz) }
+            .toList()
     }
 
     private fun probeChannelForSignal(
@@ -715,6 +788,7 @@ class MainActivity : AppCompatActivity() {
                 if (needsConfirmation) scannerConfirmProbeFrameCount(profile) else 0
             val analogDetected = detectedFrameCount >= scannerRequiredDetectedFrameCount(profile) &&
                 bestConfidence >= SCANNER_MIN_ANALOG_CONFIDENCE
+            val previewQuality = bestFrame?.bitmap?.let { imageQualityScore(it) } ?: 0.0
             SignalProbeResult(
                 signalPresent = analogDetected,
                 signalType = if (analogDetected) SignalType.ANALOG else SignalType.UNKNOWN,
@@ -722,6 +796,7 @@ class MainActivity : AppCompatActivity() {
                 confidence = bestConfidence,
                 previewFrame = if (analogDetected) bestFrame?.bitmap else null,
                 diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${config.sampleFormat.metadataValue}\nscanner_iio_interface: ${iioInterface.usbInterface.name ?: "IIO"}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$bestDiagnostic",
+                imageQuality = if (analogDetected) previewQuality else 0.0,
             )
         } finally {
             closeAnalogVideoPlaybackSession(sessionHandle)
@@ -807,6 +882,83 @@ class MainActivity : AppCompatActivity() {
 
     private fun estimateRssiDbfs(confidence: Double): Double {
         return -95.0 + confidence.coerceIn(0.0, 1.0) * 45.0
+    }
+
+    private fun imageQualityScore(bitmap: Bitmap): Double {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width < 16 || height < 16) {
+            return 0.0
+        }
+
+        val blockSize = (minOf(width, height) / 18).coerceIn(6, 14)
+        val blockMeans = mutableListOf<Double>()
+        var globalSum = 0.0
+        var globalSumSquares = 0.0
+        var globalCount = 0
+        var localVarianceSum = 0.0
+        var localBlockCount = 0
+
+        var y = 0
+        while (y + blockSize <= height) {
+            var x = 0
+            while (x + blockSize <= width) {
+                var sum = 0.0
+                var sumSquares = 0.0
+                var count = 0
+                for (yy in y until y + blockSize) {
+                    for (xx in x until x + blockSize) {
+                        val value = grayAt(bitmap, xx, yy)
+                        sum += value
+                        sumSquares += value * value
+                        count += 1
+                    }
+                }
+
+                if (count > 0) {
+                    val mean = sum / count.toDouble()
+                    val variance = ((sumSquares / count.toDouble()) - (mean * mean)).coerceAtLeast(0.0)
+                    blockMeans.add(mean)
+                    localVarianceSum += variance
+                    localBlockCount += 1
+                    globalSum += sum
+                    globalSumSquares += sumSquares
+                    globalCount += count
+                }
+                x += blockSize
+            }
+            y += blockSize
+        }
+
+        if (globalCount <= 0 || blockMeans.size < 4) {
+            return 0.0
+        }
+
+        val mean = globalSum / globalCount.toDouble()
+        val globalVariance = ((globalSumSquares / globalCount.toDouble()) - (mean * mean)).coerceAtLeast(0.0)
+        if (globalVariance <= 1.0) {
+            return 0.0
+        }
+
+        val blockMeanAverage = blockMeans.sum() / blockMeans.size.toDouble()
+        var blockVarianceSum = 0.0
+        for (blockMean in blockMeans) {
+            val delta = blockMean - blockMeanAverage
+            blockVarianceSum += delta * delta
+        }
+        val blockVariance = blockVarianceSum / blockMeans.size.toDouble()
+        val localVariance = localVarianceSum / localBlockCount.coerceAtLeast(1).toDouble()
+        val structureRatio = (blockVariance / (globalVariance + 1.0)).coerceIn(0.0, 1.0)
+        val localNoiseRatio = (localVariance / (globalVariance + 1.0)).coerceIn(0.0, 1.0)
+        val exposureScore = (1.0 - (kotlin.math.abs(mean - 127.5) / 127.5)).coerceIn(0.0, 1.0)
+        val contrastScore = (sqrt(globalVariance) / 82.0).coerceIn(0.0, 1.0)
+        val noisePenalty = (localNoiseRatio * 0.85).coerceIn(0.0, 0.85)
+        return (structureRatio * 0.55 + contrastScore * 0.25 + exposureScore * 0.20) *
+            (1.0 - noisePenalty)
+    }
+
+    private fun grayAt(bitmap: Bitmap, x: Int, y: Int): Double {
+        return bitmap.getPixel(x, y).and(0xFF).toDouble()
     }
 
     private fun updateLastProbeDiagnostic(channel: KnownChannel, result: SignalProbeResult) {
@@ -911,6 +1063,8 @@ class MainActivity : AppCompatActivity() {
                     append(record.direction.name.lowercase(Locale.US))
                     append(" | C: ")
                     append(String.format(Locale.US, "%.2f", record.confidence))
+                    append(" | Q: ")
+                    append(String.format(Locale.US, "%.2f", record.imageQuality))
                 }
             },
         )
@@ -940,7 +1094,6 @@ class MainActivity : AppCompatActivity() {
         binding.videoFrameContainer.visibility = View.VISIBLE
         record.previewFrame?.let { setVideoFrameBitmap(it) }
         startSelectedChannelPlayback(record.channel)
-        scheduleBackgroundScanWhilePlaying()
     }
 
     private fun startSelectedChannelPlayback(channel: KnownChannel) {
@@ -948,9 +1101,61 @@ class MainActivity : AppCompatActivity() {
         stopPlayback()
         selectedPlaybackChannel = channel
         scanController.lockPlaying()
-        activeMode = ActiveMode.PLUTO_USB_PLAYBACK
+        activeMode = ActiveMode.PLUTO_IP_PLAYBACK
         updateScannerUi()
-        preparePlutoUsbPlayback(VideoStandard.AUTO, configForChannel(channel).forcedSampleFormat(IqSampleFormat.CS8))
+        preparePlutoIpIioPlayback(VideoStandard.AUTO, configForChannel(channel).forcedSampleFormat(IqSampleFormat.CS8))
+    }
+
+    private fun retunePlaybackToAdjacentChannel(direction: Int) {
+        val current = selectedPlaybackChannel ?: return
+        val target = adjacentAnalogChannel(current, direction) ?: return
+        selectedPlaybackChannel = target
+        currentScannerChannel = null
+        scannerRunning = true
+        scanController.lockPlaying()
+        updateCurrentFrequencyLabel(target.centerFrequencyHz)
+        updateScannerUi()
+        startSelectedChannelPlayback(target)
+    }
+
+    private fun updateChannelStepControls() {
+        val current = selectedPlaybackChannel
+        if (current == null) {
+            binding.channelStepControls.visibility = View.GONE
+            binding.prevChannelButton.isEnabled = false
+            binding.nextChannelButton.isEnabled = false
+            return
+        }
+
+        val previous = adjacentAnalogChannel(current, -1)
+        val next = adjacentAnalogChannel(current, 1)
+        binding.channelStepControls.visibility = View.VISIBLE
+        binding.prevChannelButton.isEnabled = previous != null
+        binding.nextChannelButton.isEnabled = next != null
+        binding.prevChannelButton.text = "- ${previous?.let { formatFrequency(it.centerFrequencyHz) } ?: "--"}"
+        binding.nextChannelButton.text = "+ ${next?.let { formatFrequency(it.centerFrequencyHz) } ?: "--"}"
+    }
+
+    private fun adjacentAnalogChannel(channel: KnownChannel, direction: Int): KnownChannel? {
+        val channels = ChannelPlan.knownChannels
+            .filter { it.expectedSignalType == SignalType.ANALOG }
+            .filter { it.rfFrontendProfileId == channel.rfFrontendProfileId }
+            .distinctBy { it.centerFrequencyHz }
+            .sortedBy { it.centerFrequencyHz }
+        if (channels.isEmpty()) {
+            return null
+        }
+
+        val index = channels.indexOfFirst { it.centerFrequencyHz == channel.centerFrequencyHz }
+        if (index < 0) {
+            return null
+        }
+
+        val targetIndex = index + direction.coerceIn(-1, 1)
+        if (targetIndex !in channels.indices) {
+            return null
+        }
+        return channels[targetIndex]
     }
 
     private fun scheduleBackgroundScanWhilePlaying() {
@@ -992,7 +1197,7 @@ class MainActivity : AppCompatActivity() {
                     scanController.lockPlaying()
                     updateScannerUi()
                     binding.videoFrameContainer.visibility = View.VISIBLE
-                    preparePlutoUsbPlayback(VideoStandard.AUTO, configForChannel(selected).forcedSampleFormat(IqSampleFormat.CS8))
+                    preparePlutoIpIioPlayback(VideoStandard.AUTO, configForChannel(selected).forcedSampleFormat(IqSampleFormat.CS8))
                     scheduleBackgroundScanWhilePlaying()
                 } else {
                     updateScannerUi()
@@ -1110,6 +1315,7 @@ class MainActivity : AppCompatActivity() {
         return when (snapshot.mode) {
             ActiveMode.PLUTO_USB_PLAYBACK,
             ActiveMode.PLUTO_USB_SPECTRUM -> directUsbPlutoConnectionStatus()
+            ActiveMode.PLUTO_IP_PLAYBACK -> plutoIpIioConnectionStatus()
             ActiveMode.PLUTO_WS_PLAYBACK,
             ActiveMode.PLUTO_WS_SPECTRUM -> webSocketPlutoConnectionStatus()
             else -> PlutoConnectionStatus(connected = true, diagnostic = "pluto_monitor: mode ${snapshot.mode} is not monitored")
@@ -1155,9 +1361,25 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun plutoIpIioConnectionStatus(): PlutoConnectionStatus {
+        val selection = findPlutoNetworkWithDiagnostics(MAIA_DEFAULT_HOST)
+        val network = selection.network
+        if (network == null || network.networkHandle == 0L) {
+            return PlutoConnectionStatus(
+                connected = false,
+                diagnostic = "pluto_ip_iio: Android network to $MAIA_DEFAULT_HOST missing\n${selection.diagnostics}",
+            )
+        }
+        return PlutoConnectionStatus(
+            connected = true,
+            diagnostic = "pluto_ip_iio: network ${networkLabel(network)}",
+        )
+    }
+
     private fun isPlutoSessionActive(snapshot: PlutoSessionRecovery): Boolean {
         return when (snapshot.mode) {
             ActiveMode.PLUTO_USB_PLAYBACK,
+            ActiveMode.PLUTO_IP_PLAYBACK,
             ActiveMode.PLUTO_WS_PLAYBACK -> playbackRunning
             ActiveMode.PLUTO_USB_SPECTRUM,
             ActiveMode.PLUTO_WS_SPECTRUM -> spectrumRunning
@@ -1223,6 +1445,7 @@ class MainActivity : AppCompatActivity() {
         try {
             when (snapshot.mode) {
                 ActiveMode.PLUTO_USB_PLAYBACK,
+                ActiveMode.PLUTO_IP_PLAYBACK,
                 ActiveMode.PLUTO_WS_PLAYBACK -> stopPlayback()
                 ActiveMode.PLUTO_USB_SPECTRUM,
                 ActiveMode.PLUTO_WS_SPECTRUM -> stopSpectrum()
@@ -1239,6 +1462,7 @@ class MainActivity : AppCompatActivity() {
     private fun restartPlutoSession(snapshot: PlutoSessionRecovery) {
         when (snapshot.mode) {
             ActiveMode.PLUTO_USB_PLAYBACK -> preparePlutoUsbPlayback(snapshot.standard, snapshot.config)
+            ActiveMode.PLUTO_IP_PLAYBACK -> preparePlutoIpIioPlayback(snapshot.standard, snapshot.config)
             ActiveMode.PLUTO_USB_SPECTRUM -> preparePlutoUsbSpectrum(snapshot.config)
             ActiveMode.PLUTO_WS_PLAYBACK -> preparePlutoWebSocketPlayback(snapshot.standard, snapshot.config)
             ActiveMode.PLUTO_WS_SPECTRUM -> preparePlutoWebSocketSpectrum(snapshot.config)
@@ -1336,10 +1560,14 @@ class MainActivity : AppCompatActivity() {
             hardwareIqCorrection = config.hardwareIqCorrection,
             hardwareBbdcCorrection = config.hardwareBbdcCorrection,
             hardwareRfdcCorrection = config.hardwareRfdcCorrection,
-            source = "pluto_iio_usb_live",
+            source = if (uri.startsWith("ip:")) "pluto_iio_ip_live" else "pluto_iio_usb_live",
             device = "PlutoSDR $uri",
             requestedVideoStandard = requestedStandard,
         )
+    }
+
+    private fun plutoIioIpUri(config: PlutoIqConfig): String {
+        return "ip:${config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }}"
     }
 
     private fun liveMaiaMetadata(
@@ -1518,6 +1746,10 @@ class MainActivity : AppCompatActivity() {
         playbackSessionHandle = 0L
         val usbConnectionToClose = liveUsbConnection
         liveUsbConnection = null
+        val previousBoundNetwork = playbackPreviousBoundNetwork
+        val hadPlaybackNetworkBinding = playbackBoundNetwork != null
+        playbackPreviousBoundNetwork = null
+        playbackBoundNetwork = null
         if (sessionToClose != 0L || usbConnectionToClose != null) {
             decodeExecutor.execute {
                 if (sessionToClose != 0L) {
@@ -1525,6 +1757,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 usbConnectionToClose?.close()
             }
+        }
+        if (hadPlaybackNetworkBinding) {
+            getSystemService(ConnectivityManager::class.java).bindProcessToNetwork(previousBoundNetwork)
         }
     }
 
@@ -1622,8 +1857,11 @@ class MainActivity : AppCompatActivity() {
 
                 setVideoFrameBitmap(frame.bitmap)
                 if ((frameIndex % PLAYBACK_DIAGNOSTIC_EVERY_FRAMES) == 0L) {
-                    binding.sampleText.text = metadata.toDiagnosticText() +
-                        "\n\nplayback_frame_index: $frameIndex\n" + frame.diagnostic
+                    updateSampleText(
+                        metadata.toDiagnosticText() +
+                            "\n\nplayback_frame_index: $frameIndex\n" + frame.diagnostic,
+                        preserveStatsScroll = true,
+                    )
                 }
                 playbackFrameIndex = frameIndex + 1L
                 mainHandler.postDelayed(
@@ -1676,7 +1914,7 @@ class MainActivity : AppCompatActivity() {
 
                 setVideoFrameBitmap(frame.bitmap)
                 if ((frameIndex % SPECTRUM_DIAGNOSTIC_EVERY_FRAMES) == 0L) {
-                    binding.sampleText.text = frame.diagnostic
+                    updateSampleText(frame.diagnostic, preserveStatsScroll = true)
                 }
                 spectrumFrameIndex = frameIndex + 1L
                 mainHandler.postDelayed(
@@ -1781,6 +2019,22 @@ class MainActivity : AppCompatActivity() {
         binding.sampleText.text = "Requesting Android USB permission for PlutoSDR live playback:\n" +
             usbDeviceLabel(plutoDevice)
         usbManager.requestPermission(plutoDevice, permissionIntent)
+    }
+
+    private fun preparePlutoIpIioPlayback(
+        standard: VideoStandard,
+        config: PlutoIqConfig,
+    ) {
+        if (requestPlutoUsbPermissionForNetworkIfNeeded(
+                action = PlutoUsbAction.IP_IIO_PLAYBACK,
+                standard = standard,
+                config = config,
+                description = "Pluto IP IIO playback",
+            )
+        ) {
+            return
+        }
+        startPlutoIpIioPlayback(standard, config)
     }
 
     private fun preparePlutoUsbSpectrum(config: PlutoIqConfig) {
@@ -1938,6 +2192,76 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun startPlutoIpIioPlayback(
+        standard: VideoStandard,
+        config: PlutoIqConfig,
+    ) {
+        val uri = plutoIioIpUri(config)
+        activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+        rememberPlutoSession(ActiveMode.PLUTO_IP_PLAYBACK, standard, config)
+        updateCurrentFrequencyLabel(config.centerFrequencyHz)
+        playbackRunning = true
+        updateSleepBlocker()
+        playbackFrameIndex = 0L
+        binding.sampleText.text = "Opening Pluto IP IIO ${config.sampleFormat.metadataValue} live playback:\n$uri"
+        decodeExecutor.execute {
+            val openResult = openPlutoIpIioPlaybackSessionWithRetry(
+                uri = uri,
+                standard = standard,
+                config = config,
+            )
+            mainHandler.post {
+                if (!playbackRunning) {
+                    if (openResult.sessionHandle != 0L) {
+                        decodeExecutor.execute {
+                            closeAnalogVideoPlaybackSession(openResult.sessionHandle)
+                            restorePlaybackNetworkBinding(
+                                openResult.previousBoundNetwork,
+                                openResult.boundNetwork,
+                            )
+                        }
+                    } else {
+                        restorePlaybackNetworkBinding(
+                            openResult.previousBoundNetwork,
+                            openResult.boundNetwork,
+                        )
+                    }
+                    return@post
+                }
+
+                if (openResult.sessionHandle == 0L) {
+                    playbackRunning = false
+                    updateSleepBlocker()
+                    restorePlaybackNetworkBinding(
+                        openResult.previousBoundNetwork,
+                        openResult.boundNetwork,
+                    )
+                    val metadata = livePlutoMetadata(openResult.uri.ifBlank { uri }, standard, config)
+                    binding.sampleText.text = metadata.toDiagnosticText() +
+                        "\n\nPlayback stopped: native Pluto IP IIO playback session could not be created.\n\n" +
+                        "native_error: ${openResult.nativeError.ifBlank { "unavailable" }}\n\n" +
+                        openResult.diagnostic
+                    return@post
+                }
+
+                val metadata = livePlutoMetadata(openResult.uri, standard, config)
+                playbackSessionHandle = openResult.sessionHandle
+                liveUsbConnection = null
+                playbackPreviousBoundNetwork = openResult.previousBoundNetwork
+                playbackBoundNetwork = openResult.boundNetwork
+                binding.sampleText.text = metadata.toDiagnosticText() +
+                    "\n\nPluto IP IIO ${config.sampleFormat.metadataValue} live playback started.\n" +
+                    openResult.diagnostic
+                schedulePlaybackFrame(
+                    path = "",
+                    metadata = metadata,
+                    standard = standard,
+                    createFileSessionIfNeeded = false,
+                )
+            }
+        }
+    }
+
     private fun openPlutoUsbPlaybackSessionWithRetry(
         usbManager: UsbManager,
         device: UsbDevice,
@@ -2008,12 +2332,144 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun openPlutoIpIioPlaybackSessionWithRetry(
+        uri: String,
+        standard: VideoStandard,
+        config: PlutoIqConfig,
+    ): PlutoIpIioSessionOpenResult {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
+        val selection = waitForPlutoIioNetworkWithDiagnostics(host)
+        val network = selection.network
+        if (network == null || network.networkHandle == 0L) {
+            return PlutoIpIioSessionOpenResult(
+                sessionHandle = 0L,
+                previousBoundNetwork = null,
+                boundNetwork = null,
+                uri = uri,
+                nativeError = "Android network to $host was not found",
+                diagnostic = selection.diagnostics,
+            )
+        }
+
+        val previousBoundNetwork = connectivityManager.boundNetworkForProcess
+        if (!connectivityManager.bindProcessToNetwork(network)) {
+            return PlutoIpIioSessionOpenResult(
+                sessionHandle = 0L,
+                previousBoundNetwork = previousBoundNetwork,
+                boundNetwork = null,
+                uri = uri,
+                nativeError = "bindProcessToNetwork failed for ${networkLabel(network)}",
+                diagnostic = selection.diagnostics,
+            )
+        }
+
+        val diagnostics = StringBuilder()
+        diagnostics.append(selection.diagnostics.trim())
+        diagnostics.append("\nprocess_bound_network: ${networkLabel(network)}")
+        diagnostics.append("\nprevious_bound_network: ${networkLabel(previousBoundNetwork)}\n")
+        var lastError = ""
+
+        for (attempt in 1..PLUTO_USB_OPEN_RETRY_COUNT) {
+            val sessionHandle = createPlutoAnalogVideoPlaybackSession(
+                uri = uri,
+                sampleRateHz = config.sampleRateHz,
+                centerFrequencyHz = config.centerFrequencyHz,
+                rfBandwidthHz = config.rfBandwidthHz,
+                gainDb = config.gainDb,
+                sampleFormat = config.sampleFormat.nativeValue,
+                loOffsetHz = config.loOffsetHz,
+                hardwareIqCorrection = config.hardwareIqCorrection,
+                hardwareBbdcCorrection = config.hardwareBbdcCorrection,
+                hardwareRfdcCorrection = config.hardwareRfdcCorrection,
+                videoStandard = standard.nativeValue,
+            )
+            if (sessionHandle != 0L) {
+                diagnostics.append("ip_iio_open_attempt_$attempt: ok uri=$uri")
+                return PlutoIpIioSessionOpenResult(
+                    sessionHandle = sessionHandle,
+                    previousBoundNetwork = previousBoundNetwork,
+                    boundNetwork = network,
+                    uri = uri,
+                    nativeError = "",
+                    diagnostic = diagnostics.toString().trim(),
+                )
+            }
+
+            lastError = consumeLastNativeError().ifBlank { "native session creation failed" }
+            diagnostics.append("ip_iio_open_attempt_$attempt: failed native_error=$lastError\n")
+            if (attempt < PLUTO_USB_OPEN_RETRY_COUNT && shouldRetryPlutoUsbOpen(lastError)) {
+                Thread.sleep(PLUTO_USB_OPEN_RETRY_DELAY_MS * attempt.toLong())
+            } else {
+                break
+            }
+        }
+
+        restorePlaybackNetworkBinding(previousBoundNetwork, network)
+        return PlutoIpIioSessionOpenResult(
+            sessionHandle = 0L,
+            previousBoundNetwork = previousBoundNetwork,
+            boundNetwork = null,
+            uri = uri,
+            nativeError = lastError,
+            diagnostic = diagnostics.toString().trim(),
+        )
+    }
+
+    private fun waitForPlutoIioNetworkWithDiagnostics(host: String): EthernetNetworkSelection {
+        val diagnostics = StringBuilder()
+        val deadlineMs = SystemClock.elapsedRealtime() + PLUTO_IP_NETWORK_WAIT_MS
+        var attempt = 0
+
+        while (true) {
+            attempt++
+            val selection = findPlutoNetworkWithDiagnostics(host)
+            diagnostics.append("pluto_ip_iio_network_probe_attempt_$attempt\n")
+            diagnostics.append(selection.diagnostics.trim())
+            diagnostics.append("\n")
+
+            val network = selection.network
+            if (network == null || network.networkHandle == 0L) {
+                diagnostics.append("pluto_ip_iio_network_probe_result: no Android network\n")
+            } else {
+                val tcpTest = testPlutoIiodTcpConnection(network, host)
+                diagnostics.append(tcpTest.diagnostics)
+                diagnostics.append("\n")
+                if (tcpTest.connectionEstablished) {
+                    diagnostics.append("pluto_ip_iio_network_ready: true\n")
+                    return EthernetNetworkSelection(network, diagnostics.toString().trim())
+                }
+            }
+
+            val remainingMs = deadlineMs - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) {
+                break
+            }
+            Thread.sleep(minOf(PLUTO_IP_NETWORK_POLL_MS, remainingMs))
+        }
+
+        diagnostics.append("pluto_ip_iio_network_ready: false\n")
+        diagnostics.append("pluto_ip_iio_network_wait_ms: $PLUTO_IP_NETWORK_WAIT_MS\n")
+        diagnostics.append("pluto_ip_iio_note: native libiio open was skipped because iiod was not reachable through Android Ethernet.\n")
+        return EthernetNetworkSelection(null, diagnostics.toString().trim())
+    }
+
+    private fun restorePlaybackNetworkBinding(previousBoundNetwork: Network?, boundNetwork: Network?) {
+        if (boundNetwork == null) {
+            return
+        }
+        getSystemService(ConnectivityManager::class.java).bindProcessToNetwork(previousBoundNetwork)
+    }
+
     private fun shouldRetryPlutoUsbOpen(message: String): Boolean {
         val lower = message.lowercase(Locale.US)
         return lower.contains("reset pipes") ||
             lower.contains("timed out") ||
             lower.contains("timeout") ||
             lower.contains("connection timed out") ||
+            lower.contains("network is unreachable") ||
+            lower.contains("no route to host") ||
+            lower.contains("host is unreachable") ||
             lower.contains("resource busy") ||
             lower.contains("busy") ||
             lower.contains("open pluto usb")
@@ -2167,6 +2623,96 @@ class MainActivity : AppCompatActivity() {
         return EthernetNetworkSelection(ethernetNetwork, diagnostics.toString())
     }
 
+    private fun findPlutoNetworkWithDiagnostics(host: String): EthernetNetworkSelection {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val diagnostics = StringBuilder()
+        val activeNetwork = connectivityManager.activeNetwork
+        val networks = connectivityManager.allNetworks
+        val targetPrefix = host.substringBeforeLast('.', missingDelimiterValue = host) + "."
+        var sameSubnetNetwork: Network? = null
+        var sameSubnetEthernetNetwork: Network? = null
+        var ethernetNetwork: Network? = null
+
+        diagnostics.append("Pluto IP IIO network diagnostics\n")
+        diagnostics.append("target_host: $host\n")
+        diagnostics.append("target_ipv4_prefix: $targetPrefix\n")
+        diagnostics.append("active_network: ${networkLabel(activeNetwork)}\n")
+        diagnostics.append("available_network_count: ${networks.size}\n")
+
+        networks.forEachIndexed { index, network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network)
+            val linkProperties = connectivityManager.getLinkProperties(network)
+            appendNetworkDiagnostics(
+                output = diagnostics,
+                index = index,
+                network = network,
+                capabilities = capabilities,
+                linkProperties = linkProperties,
+            )
+            val isEthernet = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+            val isSameSubnet = hasIpv4Prefix(linkProperties, targetPrefix)
+            if (sameSubnetNetwork == null && isSameSubnet) {
+                sameSubnetNetwork = network
+            }
+            if (sameSubnetEthernetNetwork == null && isSameSubnet && isEthernet) {
+                sameSubnetEthernetNetwork = network
+            }
+            if (ethernetNetwork == null && isEthernet) {
+                ethernetNetwork = network
+            }
+        }
+
+        val selectedNetwork = sameSubnetEthernetNetwork ?: ethernetNetwork ?: sameSubnetNetwork
+        diagnostics.append("\npluto_same_subnet_network: ${networkLabel(sameSubnetNetwork)}\n")
+        diagnostics.append("pluto_same_subnet_ethernet_network: ${networkLabel(sameSubnetEthernetNetwork)}\n")
+        diagnostics.append("ethernet_network: ${networkLabel(ethernetNetwork)}\n")
+        diagnostics.append("selected_pluto_network: ${networkLabel(selectedNetwork)}\n")
+        selectedNetwork?.let { network ->
+            diagnostics.append("selected_network_handle: ${network.networkHandle}\n")
+            connectivityManager.getLinkProperties(network)?.interfaceName?.let { interfaceName ->
+                diagnostics.append("selected_interface_name: $interfaceName\n")
+            }
+        }
+
+        logMultiline(diagnostics.toString())
+        return EthernetNetworkSelection(selectedNetwork, diagnostics.toString())
+    }
+
+    private fun testPlutoIiodTcpConnection(
+        network: Network,
+        host: String,
+    ): MaiaHttpConnectionTestResult {
+        val diagnostics = StringBuilder()
+        diagnostics.append("Pluto iiod TCP connection test\n")
+        diagnostics.append("target: $host:$PLUTO_IP_IIO_PORT\n")
+        diagnostics.append("network: ${networkLabel(network)}\n")
+        diagnostics.append("network_handle: ${network.networkHandle}\n")
+        diagnostics.append("connect_timeout_ms: $PLUTO_IP_CONNECT_TIMEOUT_MS\n")
+
+        return try {
+            network.socketFactory.createSocket().use { socket ->
+                socket.connect(
+                    InetSocketAddress(host, PLUTO_IP_IIO_PORT),
+                    PLUTO_IP_CONNECT_TIMEOUT_MS,
+                )
+                diagnostics.append("socket_local_address: ${socket.localAddress?.hostAddress ?: "unavailable"}:${socket.localPort}\n")
+                diagnostics.append("socket_remote_address: ${socket.inetAddress?.hostAddress ?: "unavailable"}:${socket.port}\n")
+            }
+            diagnostics.append("connection_established: true\n")
+            MaiaHttpConnectionTestResult(connectionEstablished = true, diagnostics = diagnostics.toString())
+        } catch (error: SocketTimeoutException) {
+            diagnostics.append("connection_established: false\n")
+            diagnostics.append("timeout: true\n")
+            diagnostics.append("exception_message: ${error.message ?: error.javaClass.name}\n")
+            MaiaHttpConnectionTestResult(connectionEstablished = false, diagnostics = diagnostics.toString())
+        } catch (error: Exception) {
+            diagnostics.append("connection_established: false\n")
+            diagnostics.append("timeout: false\n")
+            diagnostics.append("exception_message: ${error.message ?: error.javaClass.name}\n")
+            MaiaHttpConnectionTestResult(connectionEstablished = false, diagnostics = diagnostics.toString())
+        }
+    }
+
     private fun appendNetworkDiagnostics(
         output: StringBuilder,
         index: Int,
@@ -2183,6 +2729,15 @@ class MainActivity : AppCompatActivity() {
         output.append("  ipv4_addresses: ${ipv4Addresses(linkProperties).ifEmpty { "none" }}\n")
         output.append("  routes: ${linkProperties?.routes?.joinToString(separator = " | ") ?: "unavailable"}\n")
         output.append("  dns_servers: ${linkProperties?.dnsServers?.joinToString(separator = ", ") ?: "unavailable"}\n")
+    }
+
+    private fun hasIpv4Prefix(linkProperties: LinkProperties?, prefix: String): Boolean {
+        return linkProperties
+            ?.linkAddresses
+            ?.any { linkAddress ->
+                val address = linkAddress.address
+                address is Inet4Address && address.hostAddress?.startsWith(prefix) == true
+            } == true
     }
 
     private fun ipv4Addresses(linkProperties: LinkProperties?): String {
@@ -2498,8 +3053,7 @@ class MainActivity : AppCompatActivity() {
         )
         binding.sampleText.text = "Requesting Android USB permission for $description:\n" +
             usbDeviceLabel(plutoDevice) + "\n\n" +
-            "The WebSocket IQ stream is still read from ws://${config.plutoWebSocketEndpoint()}${config.plutoWebSocketPath}; " +
-            "this permission enables Android's Pluto USB network path on some devices."
+            "This permission helps Android expose Pluto's USB network path on some devices."
         usbManager.requestPermission(plutoDevice, permissionIntent)
         return true
     }
@@ -3403,6 +3957,15 @@ class MainActivity : AppCompatActivity() {
         val diagnostic: String,
     )
 
+    private data class PlutoIpIioSessionOpenResult(
+        val sessionHandle: Long,
+        val previousBoundNetwork: Network?,
+        val boundNetwork: Network?,
+        val uri: String,
+        val nativeError: String,
+        val diagnostic: String,
+    )
+
     private data class PlutoConnectionStatus(
         val connected: Boolean,
         val diagnostic: String,
@@ -3412,6 +3975,11 @@ class MainActivity : AppCompatActivity() {
         val mode: ActiveMode,
         val standard: VideoStandard,
         val config: PlutoIqConfig,
+    )
+
+    private data class ScannerProbeSelection(
+        val channel: KnownChannel,
+        val result: SignalProbeResult,
     )
 
     private data class PlutoIqConfig(
@@ -3492,6 +4060,7 @@ class MainActivity : AppCompatActivity() {
     private enum class PlutoUsbAction {
         CAPTURE_TO_FILE,
         LIVE_PLAYBACK,
+        IP_IIO_PLAYBACK,
         SPECTRUM_VIEW,
         WEB_SOCKET_PLAYBACK,
         WEB_SOCKET_SPECTRUM,
@@ -3504,6 +4073,7 @@ class MainActivity : AppCompatActivity() {
         FILE_FRAME,
         RECORD_IQ,
         PLUTO_USB_PLAYBACK,
+        PLUTO_IP_PLAYBACK,
         PLUTO_USB_SPECTRUM,
         PLUTO_WS_PLAYBACK,
         PLUTO_WS_SPECTRUM,
@@ -3513,6 +4083,7 @@ class MainActivity : AppCompatActivity() {
         fun isPlaybackMode(): Boolean {
             return this == FILE_PLAYBACK ||
                 this == PLUTO_USB_PLAYBACK ||
+                this == PLUTO_IP_PLAYBACK ||
                 this == PLUTO_WS_PLAYBACK ||
                 this == MAIA_PLAYBACK
         }
@@ -3524,7 +4095,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun isPlutoPlaybackMode(): Boolean {
-            return this == PLUTO_USB_PLAYBACK || this == PLUTO_WS_PLAYBACK
+            return this == PLUTO_USB_PLAYBACK || this == PLUTO_IP_PLAYBACK || this == PLUTO_WS_PLAYBACK
         }
 
         fun isPlutoSpectrumMode(): Boolean {
@@ -3534,6 +4105,7 @@ class MainActivity : AppCompatActivity() {
         fun label(): String {
             return when (this) {
                 PLUTO_USB_PLAYBACK -> "Pluto USB playback"
+                PLUTO_IP_PLAYBACK -> "Pluto IP IIO playback"
                 PLUTO_USB_SPECTRUM -> "Pluto USB FFT / waterfall"
                 PLUTO_WS_PLAYBACK -> "Pluto WebSocket playback"
                 PLUTO_WS_SPECTRUM -> "Pluto WebSocket FFT / waterfall"
@@ -3744,6 +4316,9 @@ class MainActivity : AppCompatActivity() {
         private const val SCANNER_DEEP_REQUIRED_DETECTED_FRAME_COUNT = 2
         private const val SCANNER_CONFIRMATION_CONFIDENCE = 0.35
         private const val SCANNER_MIN_ANALOG_CONFIDENCE = 0.50
+        private const val SCANNER_NEARBY_CHANNEL_RADIUS_HZ = 12_000_000L
+        private const val SCANNER_NEARBY_CHANNEL_Q_SWITCH_MARGIN = 0.03
+        private const val SCANNER_NEARBY_CHANNEL_Q_TIE_MARGIN = 0.01
         private const val PLAYBACK_SCAN_PLAY_WINDOW_MS = 8_000L
         private const val PLAYBACK_SCAN_BACKGROUND_WINDOW_MS = 2_000L
         private const val BACKGROUND_SCAN_MAX_CHANNELS = 2
@@ -3757,6 +4332,10 @@ class MainActivity : AppCompatActivity() {
         private const val PLUTO_MAIN_THREAD_STOP_TIMEOUT_MS = 5_000L
         private const val PLUTO_USB_OPEN_RETRY_COUNT = 3
         private const val PLUTO_USB_OPEN_RETRY_DELAY_MS = 700L
+        private const val PLUTO_IP_IIO_PORT = 30431
+        private const val PLUTO_IP_NETWORK_WAIT_MS = 5_000L
+        private const val PLUTO_IP_NETWORK_POLL_MS = 250L
+        private const val PLUTO_IP_CONNECT_TIMEOUT_MS = 1500
         private const val MAIA_RECORDER_PATH = "/api/recorder"
         private const val MAIA_CONNECT_TIMEOUT_MS = 3000
         private const val MAIA_READ_TIMEOUT_MS = 3000

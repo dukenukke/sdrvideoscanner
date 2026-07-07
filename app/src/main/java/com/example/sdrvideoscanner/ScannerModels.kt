@@ -38,6 +38,7 @@ data class SignalProbeResult(
     val confidence: Double,
     val previewFrame: Bitmap?,
     val diagnostic: String,
+    val imageQuality: Double = 0.0,
 )
 
 data class DetectedSignalRecord(
@@ -49,4 +50,5 @@ data class DetectedSignalRecord(
     val lastSeenTimestampMs: Long,
     val confidence: Double,
     val diagnostic: String,
+    val imageQuality: Double = 0.0,
 )

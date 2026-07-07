@@ -86,6 +86,7 @@ class ScanController(
                 lastSeenTimestampMs = now,
                 confidence = result.confidence,
                 diagnostic = result.diagnostic,
+                imageQuality = result.imageQuality,
             )
             recordsByFrequency[channel.centerFrequencyHz] = record
             state = ScannerState.CANDIDATE_DETECTED
@@ -98,6 +99,7 @@ class ScanController(
         return strongestRecordsByFrequencyCluster(recordsByFrequency.values.toList())
             .sortedWith(
                 compareBy<DetectedSignalRecord> { it.channel.bandName }
+                    .thenByDescending { it.imageQuality }
                     .thenBy { it.channel.centerFrequencyHz },
             )
     }
@@ -141,7 +143,8 @@ class ScanController(
             }
             result.add(
                 cluster.maxWith(
-                    compareBy<DetectedSignalRecord> { it.rssiDbfs ?: Double.NEGATIVE_INFINITY }
+                    compareBy<DetectedSignalRecord> { it.imageQuality }
+                        .thenBy { it.rssiDbfs ?: Double.NEGATIVE_INFINITY }
                         .thenBy { it.confidence }
                         .thenBy { -it.channel.centerFrequencyHz },
                 ),

@@ -54,6 +54,8 @@ private:
     double fastFieldSampleRemainder_ = 0.0;
     bool fastFieldStartLocked_ = false;
     std::size_t fastFieldStartSyncIndex_ = 0;
+    std::size_t pendingFastFieldStartSyncIndex_ = 0;
+    std::size_t fastFieldStartRejectCount_ = 0;
 };
 
 }  // namespace sdr
