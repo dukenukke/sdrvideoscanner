@@ -78,8 +78,26 @@ VideoFrame FrameAssembler::assembleFromSync(
                 frameSyncEdges,
                 activeOffset,
                 samplesPerActiveLine);
+        auto referenceBobFieldStarts = chooseReferenceBobFieldStarts(
+                video,
+                syncStarts,
+                frameSyncEdges,
+                startSyncIndex,
+                sampleRateHz,
+                activeOffset + samplesPerActiveLine);
+        if (referenceBobFieldStarts.size() < interlacedSourceLineCount()) {
+            referenceBobFieldStarts.clear();
+        }
         for (std::uint32_t outputLine = 0; outputLine < frame.height; ++outputLine) {
             const auto fieldLine = outputLine / 2U;
+            const auto sourceLineIndex = static_cast<std::size_t>(fieldLine);
+            if (!referenceBobFieldStarts.empty() &&
+                sourceLineIndex < referenceBobFieldStarts.size()) {
+                const auto lineStart = referenceBobFieldStarts[sourceLineIndex] + activeOffset;
+                copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
+                continue;
+            }
+
             const auto syncIndex = startSyncIndex + static_cast<std::size_t>(fieldLine);
             if (syncIndex >= syncStarts.size()) {
                 break;
@@ -102,7 +120,7 @@ VideoFrame FrameAssembler::assembleFromSync(
     }
 
     frame.message = shouldBobInterlaced()
-            ? "assembled from detected horizontal sync; interlaced bob field preview"
+            ? "assembled from detected horizontal sync; frame-sync bounded interlaced bob field preview"
             : "assembled from detected horizontal sync";
     return frame;
 }

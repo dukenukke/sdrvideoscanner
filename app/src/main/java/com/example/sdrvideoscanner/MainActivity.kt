@@ -99,6 +99,8 @@ class MainActivity : AppCompatActivity() {
     private val scanController = ScanController(ChannelPlan.knownChannels)
     @Volatile
     private var scannerRunning = false
+    @Volatile
+    private var scanSessionId = 0L
     private var selectedPlaybackChannel: KnownChannel? = null
     private var currentScannerChannel: KnownChannel? = null
     private var statsVisible = false
@@ -441,6 +443,7 @@ class MainActivity : AppCompatActivity() {
     private fun startScannerModeAfterPreflight(config: PlutoIqConfig) {
         plutoIqConfig = config
         pendingPlutoIqConfig = config
+        scanSessionId += 1L
         scannerRunning = true
         updateSleepBlocker()
         scanController.clearRecords()
@@ -453,11 +456,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopScannerMode() {
+        scanSessionId += 1L
         scannerRunning = false
         selectedPlaybackChannel = null
         currentScannerChannel = null
         scanController.idle()
         updateSleepBlocker()
+        renderSignalTable()
+        binding.sampleText.text = "Scanner stopped.\n\nbuild: ${appBuildLabel()}\nPress Scan to start scanning known channels."
         updateScannerUi()
     }
 
@@ -465,6 +471,7 @@ class MainActivity : AppCompatActivity() {
         selectedPlaybackChannel = null
         currentScannerChannel = null
         stopPlayback()
+        scanSessionId += 1L
         scannerRunning = true
         updateSleepBlocker()
         scanController.clearRecords()
@@ -585,6 +592,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun runScanStep() {
         val channel = scanController.nextChannel() ?: return
+        val activeScanSessionId = scanSessionId
         currentScannerChannel = channel
         scanController.startScanning()
         updateScannerUi()
@@ -595,8 +603,13 @@ class MainActivity : AppCompatActivity() {
             } else {
                 ScannerProbeSelection(channel, initialResult)
             }
-            scanController.applyProbeResult(confirmed.channel, confirmed.result)
             mainHandler.post {
+                if (!scannerRunning ||
+                    selectedPlaybackChannel != null ||
+                    activeScanSessionId != scanSessionId) {
+                    return@post
+                }
+                scanController.applyProbeResult(confirmed.channel, confirmed.result)
                 scanController.expireStaleRecords()
                 renderSignalTable()
                 updateLastProbeDiagnostic(confirmed.channel, confirmed.result)
