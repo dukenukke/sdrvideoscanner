@@ -21,6 +21,7 @@ build/
 
 .cxx/
 .externalNativeBuild/
+.android/
 
 *.apk
 *.aab

@@ -780,9 +780,8 @@ bool shouldSelectNtscForAuto(
 double playbackFrameRateForStandard(sdr::VideoStandard standard) {
     switch (standard) {
         case sdr::VideoStandard::NTSC_525_30FPS:
-            return 30.0;
         case sdr::VideoStandard::PAL625_25FPS:
-            return 25.0;
+            return sdr::timingForStandard(standard).frameRateHz;
         case sdr::VideoStandard::AUTO:
         default:
             return 0.0;
@@ -808,7 +807,7 @@ sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
     config.readBlockSamples = isLivePlaybackSourceKind(sessionKind)
             ? kLivePlaybackReadBlockSamples
             : kFilePlaybackReadBlockSamples;
-    config.fastFieldPreview = true;
+    config.fastFieldPreview = false;
     config.detectFrameSyncInFastPreview = true;
     config.fastPreviewFieldStride = 2U;
     config.liveFrameReadMultiplier = 1.0;

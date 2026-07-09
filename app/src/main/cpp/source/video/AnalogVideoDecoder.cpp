@@ -388,6 +388,20 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
         }
     }
 
+    const auto startNearCurrentCandidate = [&]() {
+        const auto correction =
+                static_cast<long long>(fastFieldStartSyncIndex_) -
+                static_cast<long long>(nearestCandidate);
+        const auto adjusted =
+                static_cast<long long>(boundedCandidate) + correction;
+        if (adjusted <= 0) {
+            return std::size_t{0};
+        }
+        return std::min<std::size_t>(
+                static_cast<std::size_t>(adjusted),
+                maxUsableStart);
+    };
+
     constexpr auto kStartCorrectionDeadband = static_cast<long long>(6);
     constexpr auto kMaxAcceptedStartCorrection = static_cast<long long>(8);
     constexpr auto kMaxCorrectionStep = static_cast<long long>(1);
@@ -428,7 +442,7 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
         }
     }
 
-    return fastFieldStartSyncIndex_;
+    return startNearCurrentCandidate();
 }
 
 std::size_t AnalogVideoDecoder::samplesPerLine() const {

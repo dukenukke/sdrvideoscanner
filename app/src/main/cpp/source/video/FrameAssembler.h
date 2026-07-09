@@ -88,6 +88,7 @@ private:
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,
             const std::vector<std::size_t>& frameSyncEdges,
+            std::size_t preferredStartSyncIndex,
             std::uint64_t sampleRateHz,
             std::size_t activeEnd) const;
     std::vector<std::size_t> lineStartsInSpan(

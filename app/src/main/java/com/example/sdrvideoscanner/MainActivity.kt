@@ -497,8 +497,14 @@ class MainActivity : AppCompatActivity() {
             }
             append(" | records: ")
             append(scanController.records().size)
+            append(" | build: ")
+            append(appBuildLabel())
         }
         updateGainDebugOverlay()
+    }
+
+    private fun appBuildLabel(): String {
+        return "${BuildConfig.GIT_BRANCH} #${BuildConfig.BUILD_NUMBER} ${BuildConfig.GIT_SHA}"
     }
 
     private fun updateGainDebugOverlay() {
