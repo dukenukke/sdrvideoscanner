@@ -37,7 +37,7 @@ public:
 private:
     std::size_t frameSampleCount();
     std::size_t samplesPerLine() const;
-    std::size_t lockedFastFieldStartSyncIndex(
+    std::size_t lockedFieldStartSyncIndex(
             std::size_t candidateStartSyncIndex,
             std::size_t detectedSyncCount);
 
@@ -52,10 +52,10 @@ private:
     std::vector<float> videoBaseband_;
     std::vector<std::uint8_t> video_;
     double fastFieldSampleRemainder_ = 0.0;
-    bool fastFieldStartLocked_ = false;
-    std::size_t fastFieldStartSyncIndex_ = 0;
-    std::size_t pendingFastFieldStartSyncIndex_ = 0;
-    std::size_t fastFieldStartRejectCount_ = 0;
+    bool fieldStartLocked_ = false;
+    std::size_t fieldStartSyncIndex_ = 0;
+    std::size_t pendingFieldStartSyncIndex_ = 0;
+    std::size_t fieldStartRejectCount_ = 0;
 };
 
 }  // namespace sdr

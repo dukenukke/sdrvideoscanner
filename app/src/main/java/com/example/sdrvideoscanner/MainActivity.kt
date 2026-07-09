@@ -76,6 +76,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var playbackRunning = false
     @Volatile
+    private var playbackGeneration = 0L
+    @Volatile
     private var playbackSessionHandle = 0L
     @Volatile
     private var spectrumRunning = false
@@ -1828,14 +1830,25 @@ class MainActivity : AppCompatActivity() {
         stopPlayback()
         activeMode = ActiveMode.FILE_PLAYBACK
         updateCurrentFrequencyLabel(metadata.centerFrequencyHz ?: plutoIqConfig.centerFrequencyHz)
-        playbackRunning = true
+        val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
-        schedulePlaybackFrame(path, metadata, standard)
+        schedulePlaybackFrame(path, metadata, standard, generation)
+    }
+
+    private fun beginPlaybackSession(): Long {
+        playbackGeneration += 1L
+        playbackRunning = true
+        return playbackGeneration
+    }
+
+    private fun playbackSessionActive(generation: Long): Boolean {
+        return playbackRunning && playbackGeneration == generation
     }
 
     private fun stopPlayback() {
         val previousMode = activeMode
+        playbackGeneration += 1L
         playbackRunning = false
         if (activeMode.isPlaybackMode()) {
             activeMode = ActiveMode.NONE
@@ -1891,19 +1904,23 @@ class MainActivity : AppCompatActivity() {
         path: String,
         metadata: IQMetadata,
         standard: VideoStandard,
+        generation: Long,
         createFileSessionIfNeeded: Boolean = true,
     ) {
-        if (!playbackRunning) {
+        if (!playbackSessionActive(generation)) {
             return
         }
 
         val frameIndex = playbackFrameIndex
         decodeExecutor.execute {
+            if (!playbackSessionActive(generation)) {
+                return@execute
+            }
             var sessionHandle = playbackSessionHandle
             if (sessionHandle == 0L) {
                 if (!createFileSessionIfNeeded) {
                     mainHandler.post {
-                        if (!playbackRunning) {
+                        if (!playbackSessionActive(generation)) {
                             return@post
                         }
                         stopPlayback()
@@ -1915,7 +1932,7 @@ class MainActivity : AppCompatActivity() {
                 sessionHandle = createPlaybackSession(path, metadata, standard)
                 if (sessionHandle == 0L) {
                     mainHandler.post {
-                        if (!playbackRunning) {
+                        if (!playbackSessionActive(generation)) {
                             return@post
                         }
                         stopPlayback()
@@ -1925,7 +1942,7 @@ class MainActivity : AppCompatActivity() {
                     return@execute
                 }
 
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     closeAnalogVideoPlaybackSession(sessionHandle)
                     return@execute
                 }
@@ -1937,7 +1954,7 @@ class MainActivity : AppCompatActivity() {
                 includeDiagnostic = (frameIndex % PLAYBACK_DIAGNOSTIC_EVERY_FRAMES) == 0L,
             )
             mainHandler.post {
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     return@post
                 }
                 if (frame == null) {
@@ -1966,7 +1983,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 playbackFrameIndex = frameIndex + 1L
                 mainHandler.postDelayed(
-                    { schedulePlaybackFrame(path, metadata, standard, createFileSessionIfNeeded) },
+                    { schedulePlaybackFrame(path, metadata, standard, generation, createFileSessionIfNeeded) },
                     PLAYBACK_DELAY_MS,
                 )
             }
@@ -2240,11 +2257,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        playbackRunning = true
+        val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
         binding.sampleText.text = "Opening Pluto IIO ${config.sampleFormat.metadataValue} live playback:\n${usbDeviceLabel(device)}"
         decodeExecutor.execute {
+            if (!playbackSessionActive(generation)) {
+                return@execute
+            }
             val openResult = openPlutoUsbPlaybackSessionWithRetry(
                 usbManager = usbManager,
                 device = device,
@@ -2252,7 +2272,7 @@ class MainActivity : AppCompatActivity() {
                 config = config,
             )
             mainHandler.post {
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     if (openResult.sessionHandle != 0L) {
                         decodeExecutor.execute {
                             closeAnalogVideoPlaybackSession(openResult.sessionHandle)
@@ -2287,6 +2307,7 @@ class MainActivity : AppCompatActivity() {
                     path = "",
                     metadata = metadata,
                     standard = standard,
+                    generation = generation,
                     createFileSessionIfNeeded = false,
                 )
             }
@@ -2301,18 +2322,21 @@ class MainActivity : AppCompatActivity() {
         activeMode = ActiveMode.PLUTO_IP_PLAYBACK
         rememberPlutoSession(ActiveMode.PLUTO_IP_PLAYBACK, standard, config)
         updateCurrentFrequencyLabel(config.centerFrequencyHz)
-        playbackRunning = true
+        val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
         binding.sampleText.text = "Opening Pluto IP IIO ${config.sampleFormat.metadataValue} live playback:\n$uri"
         decodeExecutor.execute {
+            if (!playbackSessionActive(generation)) {
+                return@execute
+            }
             val openResult = openPlutoIpIioPlaybackSessionWithRetry(
                 uri = uri,
                 standard = standard,
                 config = config,
             )
             mainHandler.post {
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     if (openResult.sessionHandle != 0L) {
                         decodeExecutor.execute {
                             closeAnalogVideoPlaybackSession(openResult.sessionHandle)
@@ -2357,6 +2381,7 @@ class MainActivity : AppCompatActivity() {
                     path = "",
                     metadata = metadata,
                     standard = standard,
+                    generation = generation,
                     createFileSessionIfNeeded = false,
                 )
             }
@@ -2953,15 +2978,21 @@ class MainActivity : AppCompatActivity() {
         val metadata = liveMaiaMetadata(standard, config)
         activeMode = ActiveMode.MAIA_PLAYBACK
         updateCurrentFrequencyLabel(config.centerFrequencyHz)
-        playbackRunning = true
+        val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
         binding.sampleText.text = "Opening Maia CS8 live playback:\nhttp://${config.maiaEndpoint()}"
         decodeExecutor.execute {
+            if (!playbackSessionActive(generation)) {
+                return@execute
+            }
             val ethernetSelection = findEthernetNetworkWithDiagnostics()
             val ethernetNetwork = ethernetSelection.network
             if (ethernetNetwork == null || ethernetNetwork.networkHandle == 0L) {
                 mainHandler.post {
+                    if (!playbackSessionActive(generation)) {
+                        return@post
+                    }
                     playbackRunning = false
                     updateSleepBlocker()
                     binding.sampleText.text = metadata.toDiagnosticText() +
@@ -2986,7 +3017,7 @@ class MainActivity : AppCompatActivity() {
                 androidHttpTransport = transport,
             )
             mainHandler.post {
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     if (sessionHandle != 0L) {
                         decodeExecutor.execute {
                             closeAnalogVideoPlaybackSession(sessionHandle)
@@ -3022,6 +3053,7 @@ class MainActivity : AppCompatActivity() {
                     path = "",
                     metadata = metadata,
                     standard = standard,
+                    generation = generation,
                     createFileSessionIfNeeded = false,
                 )
             }
@@ -3164,16 +3196,22 @@ class MainActivity : AppCompatActivity() {
         activeMode = ActiveMode.PLUTO_WS_PLAYBACK
         rememberPlutoSession(ActiveMode.PLUTO_WS_PLAYBACK, standard, config)
         updateCurrentFrequencyLabel(config.centerFrequencyHz)
-        playbackRunning = true
+        val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
         binding.sampleText.text = "Opening Pluto WebSocket CS8 live playback:\nws://${config.plutoWebSocketEndpoint()}${config.plutoWebSocketPath}"
         decodeExecutor.execute {
+            if (!playbackSessionActive(generation)) {
+                return@execute
+            }
             val primeDiagnostic = primePlutoUsbForWebSocket(config)
             val ethernetSelection = findEthernetNetworkWithDiagnostics()
             val ethernetNetwork = ethernetSelection.network
             if (ethernetNetwork == null || ethernetNetwork.networkHandle == 0L) {
                 mainHandler.post {
+                    if (!playbackSessionActive(generation)) {
+                        return@post
+                    }
                     playbackRunning = false
                     updateSleepBlocker()
                     binding.sampleText.text = metadata.toDiagnosticText() +
@@ -3202,7 +3240,7 @@ class MainActivity : AppCompatActivity() {
                 androidWebSocketTransport = transport,
             )
             mainHandler.post {
-                if (!playbackRunning) {
+                if (!playbackSessionActive(generation)) {
                     if (sessionHandle != 0L) {
                         decodeExecutor.execute {
                             closeAnalogVideoPlaybackSession(sessionHandle)
@@ -3240,6 +3278,7 @@ class MainActivity : AppCompatActivity() {
                     path = "",
                     metadata = metadata,
                     standard = standard,
+                    generation = generation,
                     createFileSessionIfNeeded = false,
                 )
             }

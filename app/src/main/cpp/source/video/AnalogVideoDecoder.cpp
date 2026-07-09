@@ -208,10 +208,11 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     std::max(8.0,
                              std::round(static_cast<double>(config_.timing.totalLines) * 0.25)));
     if (syncDetection.syncStarts.size() >= minimumUsefulSyncs) {
-        std::size_t fastFieldStartSyncIndex = 0;
-        std::size_t fastFieldCandidateStartSyncIndex = 0;
+        std::size_t fieldStartSyncIndex = 0;
+        std::size_t fieldCandidateStartSyncIndex = 0;
+        const bool useLockedFieldStart = config_.fastFieldPreview || config_.timing.interlaced;
         const auto assembleStart = DecodeClock::now();
-        auto frame = config_.fastFieldPreview
+        auto frame = useLockedFieldStart
                 ? [&]() {
                     const auto candidateStartSyncIndex =
                             frameAssembler_.chooseFieldPreviewStartSyncIndex(
@@ -219,15 +220,15 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                                     syncDetection.syncStarts,
                                     syncDetection.frameSyncEdges,
                                     videoSampleRateHz);
-                    fastFieldCandidateStartSyncIndex = candidateStartSyncIndex;
-                    fastFieldStartSyncIndex = lockedFastFieldStartSyncIndex(
+                    fieldCandidateStartSyncIndex = candidateStartSyncIndex;
+                    fieldStartSyncIndex = lockedFieldStartSyncIndex(
                             candidateStartSyncIndex,
                             syncDetection.syncStarts.size());
                     return frameAssembler_.assembleFieldPreviewFromSync(
                         video_,
                         syncDetection.syncStarts,
                         syncDetection.frameSyncEdges,
-                        fastFieldStartSyncIndex,
+                        fieldStartSyncIndex,
                         videoSampleRateHz);
                 }()
                 : frameAssembler_.assembleFromSync(
@@ -252,11 +253,13 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                 << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
                 << "; sync_score=" << syncDetection.score
                 << "; line_stability=" << syncDetection.lineStabilityScore;
-        if (config_.fastFieldPreview) {
-            message << "; field_start_sync=" << fastFieldStartSyncIndex
-                    << "; field_start_candidate=" << fastFieldCandidateStartSyncIndex
-                    << "; field_start_locked=" << (fastFieldStartLocked_ ? "yes" : "no")
-                    << "; field_stride=" << std::max<std::size_t>(1U, config_.fastPreviewFieldStride);
+        if (useLockedFieldStart) {
+            message << "; field_start_sync=" << fieldStartSyncIndex
+                    << "; field_start_candidate=" << fieldCandidateStartSyncIndex
+                    << "; field_start_locked=" << (fieldStartLocked_ ? "yes" : "no");
+            if (config_.fastFieldPreview) {
+                message << "; field_stride=" << std::max<std::size_t>(1U, config_.fastPreviewFieldStride);
+            }
         }
         message << timingDiagnostic(
                 timings,
@@ -344,10 +347,10 @@ std::size_t AnalogVideoDecoder::frameSampleCount() {
             config_.liveFrameReadMultiplier);
 }
 
-std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
+std::size_t AnalogVideoDecoder::lockedFieldStartSyncIndex(
         std::size_t candidateStartSyncIndex,
         std::size_t detectedSyncCount) {
-    if (!config_.fastFieldPreview || detectedSyncCount == 0) {
+    if (!config_.timing.interlaced || detectedSyncCount == 0) {
         return candidateStartSyncIndex;
     }
 
@@ -357,12 +360,12 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
             : 0U;
     const auto boundedCandidate = std::min(candidateStartSyncIndex, maxUsableStart);
 
-    if (!fastFieldStartLocked_) {
-        fastFieldStartSyncIndex_ = boundedCandidate;
-        pendingFastFieldStartSyncIndex_ = boundedCandidate;
-        fastFieldStartLocked_ = true;
-        fastFieldStartRejectCount_ = 0;
-        return fastFieldStartSyncIndex_;
+    if (!fieldStartLocked_) {
+        fieldStartSyncIndex_ = boundedCandidate;
+        pendingFieldStartSyncIndex_ = boundedCandidate;
+        fieldStartLocked_ = true;
+        fieldStartRejectCount_ = 0;
+        return fieldStartSyncIndex_;
     }
 
     const auto fieldLineCount = static_cast<std::size_t>(
@@ -372,35 +375,21 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
     if (fieldLineCount > 1U && nearestCandidate + fieldLineCount <= maxUsableStart) {
         const auto shiftedCandidate = nearestCandidate + fieldLineCount;
         if (std::abs(static_cast<long long>(shiftedCandidate) -
-                     static_cast<long long>(fastFieldStartSyncIndex_)) <
+                     static_cast<long long>(fieldStartSyncIndex_)) <
             std::abs(static_cast<long long>(nearestCandidate) -
-                     static_cast<long long>(fastFieldStartSyncIndex_))) {
+                     static_cast<long long>(fieldStartSyncIndex_))) {
             nearestCandidate = shiftedCandidate;
         }
     }
     if (fieldLineCount > 1U && nearestCandidate >= fieldLineCount) {
         const auto shiftedCandidate = nearestCandidate - fieldLineCount;
         if (std::abs(static_cast<long long>(shiftedCandidate) -
-                     static_cast<long long>(fastFieldStartSyncIndex_)) <
+                     static_cast<long long>(fieldStartSyncIndex_)) <
             std::abs(static_cast<long long>(nearestCandidate) -
-                     static_cast<long long>(fastFieldStartSyncIndex_))) {
+                     static_cast<long long>(fieldStartSyncIndex_))) {
             nearestCandidate = shiftedCandidate;
         }
     }
-
-    const auto startNearCurrentCandidate = [&]() {
-        const auto correction =
-                static_cast<long long>(fastFieldStartSyncIndex_) -
-                static_cast<long long>(nearestCandidate);
-        const auto adjusted =
-                static_cast<long long>(boundedCandidate) + correction;
-        if (adjusted <= 0) {
-            return std::size_t{0};
-        }
-        return std::min<std::size_t>(
-                static_cast<std::size_t>(adjusted),
-                maxUsableStart);
-    };
 
     constexpr auto kStartCorrectionDeadband = static_cast<long long>(6);
     constexpr auto kMaxAcceptedStartCorrection = static_cast<long long>(8);
@@ -409,40 +398,40 @@ std::size_t AnalogVideoDecoder::lockedFastFieldStartSyncIndex(
     constexpr auto kStableRejectedCandidateWindow = static_cast<long long>(2);
     constexpr auto kRejectedCorrectionsBeforeRelock = static_cast<std::size_t>(6U);
     const auto delta = std::abs(static_cast<long long>(nearestCandidate) -
-                                static_cast<long long>(fastFieldStartSyncIndex_));
+                                static_cast<long long>(fieldStartSyncIndex_));
     if (delta <= kStartCorrectionDeadband) {
-        fastFieldStartRejectCount_ = 0;
-        pendingFastFieldStartSyncIndex_ = nearestCandidate;
+        fieldStartRejectCount_ = 0;
+        pendingFieldStartSyncIndex_ = nearestCandidate;
     } else if (delta <= kMaxAcceptedStartCorrection) {
-        fastFieldStartRejectCount_ = 0;
-        pendingFastFieldStartSyncIndex_ = nearestCandidate;
-        const auto current = static_cast<long long>(fastFieldStartSyncIndex_);
+        fieldStartRejectCount_ = 0;
+        pendingFieldStartSyncIndex_ = nearestCandidate;
+        const auto current = static_cast<long long>(fieldStartSyncIndex_);
         const auto target = static_cast<long long>(nearestCandidate);
         if (target > current) {
-            fastFieldStartSyncIndex_ = std::min<std::size_t>(
+            fieldStartSyncIndex_ = std::min<std::size_t>(
                     static_cast<std::size_t>(current + std::min(delta, kMaxCorrectionStep)),
                     maxUsableStart);
         } else if (target < current) {
-            fastFieldStartSyncIndex_ = static_cast<std::size_t>(
+            fieldStartSyncIndex_ = static_cast<std::size_t>(
                     current - std::min(delta, kMaxCorrectionStep));
         }
     } else if (delta >= kRelockCorrection) {
         const auto rejectedDelta = std::abs(static_cast<long long>(nearestCandidate) -
-                                            static_cast<long long>(pendingFastFieldStartSyncIndex_));
+                                            static_cast<long long>(pendingFieldStartSyncIndex_));
         if (rejectedDelta <= kStableRejectedCandidateWindow) {
-            ++fastFieldStartRejectCount_;
+            ++fieldStartRejectCount_;
         } else {
-            pendingFastFieldStartSyncIndex_ = nearestCandidate;
-            fastFieldStartRejectCount_ = 1;
+            pendingFieldStartSyncIndex_ = nearestCandidate;
+            fieldStartRejectCount_ = 1;
         }
-        if (fastFieldStartRejectCount_ >= kRejectedCorrectionsBeforeRelock) {
-            fastFieldStartSyncIndex_ = std::min(nearestCandidate, maxUsableStart);
-            pendingFastFieldStartSyncIndex_ = fastFieldStartSyncIndex_;
-            fastFieldStartRejectCount_ = 0;
+        if (fieldStartRejectCount_ >= kRejectedCorrectionsBeforeRelock) {
+            fieldStartSyncIndex_ = std::min(nearestCandidate, maxUsableStart);
+            pendingFieldStartSyncIndex_ = fieldStartSyncIndex_;
+            fieldStartRejectCount_ = 0;
         }
     }
 
-    return startNearCurrentCandidate();
+    return std::min(fieldStartSyncIndex_, maxUsableStart);
 }
 
 std::size_t AnalogVideoDecoder::samplesPerLine() const {

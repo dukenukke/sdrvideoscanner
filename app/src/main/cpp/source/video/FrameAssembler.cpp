@@ -195,10 +195,10 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
 
     frame.message = shouldBobInterlaced()
             ? (!referenceBobFieldStarts.empty()
-                    ? "fast playback field preview from frame-sync bounded line PLL; interlaced bob"
+                    ? "field preview from frame-sync bounded line PLL; interlaced bob"
                     : !fieldSpanSyncIndices.empty()
-                    ? "fast playback field preview from bounded frame-sync span; interlaced bob"
-                    : "fast playback field preview from locked horizontal sync; interlaced bob")
+                    ? "field preview from bounded frame-sync span; interlaced bob"
+                    : "field preview from locked horizontal sync; interlaced bob")
             : "fast playback frame preview from horizontal sync";
     return frame;
 }
