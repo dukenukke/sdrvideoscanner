@@ -94,7 +94,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlutoIqConfig = defaultPlutoIqConfig()
     private var plutoIqConfig = defaultPlutoIqConfig()
     private var activeMode = ActiveMode.NONE
-    private val scanController = ScanController(ChannelPlan.knownChannels, DummyRfFrontendController())
+    private val rfController: RfController = NoOpRfController(debugLogging = false)
+    private val gainController = GainController(defaultGainControllerConfig(), rfController)
+    private val scanController = ScanController(ChannelPlan.knownChannels)
     @Volatile
     private var scannerRunning = false
     private var selectedPlaybackChannel: KnownChannel? = null
@@ -433,15 +435,6 @@ class MainActivity : AppCompatActivity() {
         selectedPlaybackChannel = null
         stopSpectrum()
         stopPlayback()
-        if (requestPlutoUsbPermissionForNetworkIfNeeded(
-                action = PlutoUsbAction.SCANNER,
-                standard = VideoStandard.AUTO,
-                config = plutoIqConfig,
-                description = "scanner",
-            )
-        ) {
-            return
-        }
         startScannerModeAfterPreflight(plutoIqConfig)
     }
 
@@ -505,6 +498,47 @@ class MainActivity : AppCompatActivity() {
             append(" | records: ")
             append(scanController.records().size)
         }
+        updateGainDebugOverlay()
+    }
+
+    private fun updateGainDebugOverlay() {
+        val snapshot = gainController.snapshot()
+        binding.gainDebugLabel.text = buildString {
+            append("RF Frontend Mode: ")
+            append(snapshot.rfFrontendMode.name)
+            append(" | Mode: ")
+            append(snapshot.mode.name)
+            append(" | Pluto Gain: ")
+            append(String.format(Locale.US, "%.1f dB", snapshot.plutoGainDb))
+            append(" | LNA: ")
+            append(snapshot.lnaState?.name ?: "N/A")
+            append(" | ATT: ")
+            append(snapshot.attenuationDb?.let { "${it.db} dB" } ?: "N/A")
+            append(" | BPF/MUX: ")
+            append(
+                if (snapshot.rfFrontendMode == RfFrontendMode.EXTERNAL_FRONTEND) {
+                    "${snapshot.band ?: "--"}/${snapshot.muxChannel ?: "--"}"
+                } else {
+                    "N/A"
+                },
+            )
+            append("\nPeak: ")
+            append(formatNullableDb(snapshot.peakDbfs, "dBFS"))
+            append(" | SNR: ")
+            append(formatNullableDb(snapshot.snrDb, "dB"))
+            append(" | Video: ")
+            append(formatNullableUnit(snapshot.videoConfidence))
+            append(" | Sync: ")
+            append(formatNullableUnit(snapshot.syncConfidence))
+        }
+    }
+
+    private fun formatNullableDb(value: Double?, unit: String): String {
+        return value?.let { String.format(Locale.US, "%.1f %s", it, unit) } ?: "N/A"
+    }
+
+    private fun formatNullableUnit(value: Double?): String {
+        return value?.let { String.format(Locale.US, "%.2f", it) } ?: "N/A"
     }
 
     private fun updateSleepBlocker() {
@@ -572,7 +606,17 @@ class MainActivity : AppCompatActivity() {
         channel: KnownChannel,
         initialResult: SignalProbeResult,
     ): ScannerProbeSelection {
-        val confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
+        var confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
+        var acquisitionPasses = 1
+        while (
+            confirmationResult.signalPresent &&
+            gainController.snapshot().mode == GainControlMode.ACQUISITION &&
+            acquisitionPasses < SCANNER_GAIN_ACQUISITION_CONFIRMATION_PASSES
+        ) {
+            confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
+            acquisitionPasses += 1
+        }
+
         if (!confirmationResult.signalPresent) {
             return ScannerProbeSelection(
                 channel = channel,
@@ -586,6 +630,7 @@ class MainActivity : AppCompatActivity() {
                         "\nscanner_positive_confirmation: no" +
                         "\nscanner_initial_confidence: ${String.format(Locale.US, "%.3f", initialResult.confidence)}" +
                         "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}" +
+                        "\nscanner_gain_acquisition_passes: $acquisitionPasses" +
                         "\nscanner_confirmation_diagnostic:\n${confirmationResult.diagnostic}",
                 ),
             )
@@ -597,7 +642,8 @@ class MainActivity : AppCompatActivity() {
                 diagnostic = confirmationResult.diagnostic +
                     "\nscanner_positive_confirmation: yes" +
                     "\nscanner_initial_confidence: ${String.format(Locale.US, "%.3f", initialResult.confidence)}" +
-                    "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}",
+                    "\nscanner_confirmation_confidence: ${String.format(Locale.US, "%.3f", confirmationResult.confidence)}" +
+                    "\nscanner_gain_acquisition_passes: $acquisitionPasses",
             ),
         )
 
@@ -641,110 +687,83 @@ class MainActivity : AppCompatActivity() {
         channel: KnownChannel,
         profile: ScannerProbeProfile = ScannerProbeProfile.QUICK,
     ): SignalProbeResult {
-        if (!scanController.configureFrontend(channel)) {
+        val channelGainSnapshot = if (profile == ScannerProbeProfile.QUICK) {
+            gainController.prepareScanChannel(channel)
+        } else {
+            gainController.tuneChannel(channel, "confirmation channel tune")
+        }
+        val config = scannerConfigForChannel(channel).copy(gainDb = channelGainSnapshot.plutoGainDb)
+        val uri = plutoIioIpUri(config)
+        val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val networkSelection = waitForPlutoIioNetworkWithDiagnostics(host)
+        val plutoNetwork = networkSelection.network
+        if (plutoNetwork == null || plutoNetwork.networkHandle == 0L) {
             return SignalProbeResult(
                 signalPresent = false,
                 signalType = SignalType.UNKNOWN,
                 rssiDbfs = null,
                 confidence = 0.0,
                 previewFrame = null,
-                diagnostic = "RF frontend configuration failed for ${channel.channelName}",
+                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\nscanner_probe_skipped: Pluto IP IIO network was not found\n" +
+                    networkSelection.diagnostics,
             )
         }
 
-        val config = scannerConfigForChannel(channel)
-        val usbManager = getSystemService(UsbManager::class.java)
-        val plutoDevice = findPlutoUsbDevice(usbManager)
-        if (plutoDevice == null) {
+        val previousBoundNetwork = connectivityManager.boundNetworkForProcess
+        if (!connectivityManager.bindProcessToNetwork(plutoNetwork)) {
             return SignalProbeResult(
                 signalPresent = false,
                 signalType = SignalType.UNKNOWN,
                 rssiDbfs = null,
                 confidence = 0.0,
                 previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_skipped: Pluto USB device was not found\n" +
-                    connectedUsbDevicesDiagnostic(usbManager),
-            )
-        }
-        if (!usbManager.hasPermission(plutoDevice)) {
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_skipped: Android USB permission is not granted for ${usbDeviceLabel(plutoDevice)}",
-            )
-        }
-        val iioInterface = findPlutoIioInterface(plutoDevice)
-        if (iioInterface == null) {
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_skipped: Pluto USB IIO interface was not found\n" +
-                    usbDeviceLabel(plutoDevice) + "\n" +
-                    usbInterfacesDiagnostic(plutoDevice),
-            )
-        }
-        val connection = usbManager.openDevice(plutoDevice)
-        if (connection == null) {
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_skipped: failed to open Pluto USB device\n" +
-                    usbDeviceLabel(plutoDevice) + "\n" +
-                    usbInterfacesDiagnostic(plutoDevice) + "\n\n" +
-                    plutoUsbDiagnosticText(),
+                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\nscanner_probe_skipped: bindProcessToNetwork failed for ${networkLabel(plutoNetwork)}\n" +
+                    networkSelection.diagnostics,
             )
         }
 
-        val fd = connection.fileDescriptor
-        if (fd < 0) {
-            connection.close()
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_skipped: Android returned invalid Pluto USB file descriptor $fd\n" +
-                    usbDeviceLabel(plutoDevice),
-            )
-        }
-        val uri = "usb:fd:$fd"
-        val sessionHandle = createPlutoAnalogVideoPlaybackSession(
-            uri = uri,
-            sampleRateHz = config.sampleRateHz,
-            centerFrequencyHz = config.centerFrequencyHz,
-            rfBandwidthHz = config.rfBandwidthHz,
-            gainDb = config.gainDb,
-            sampleFormat = config.sampleFormat.nativeValue,
-            loOffsetHz = config.loOffsetHz,
-            hardwareIqCorrection = config.hardwareIqCorrection,
-            hardwareBbdcCorrection = config.hardwareBbdcCorrection,
-            hardwareRfdcCorrection = config.hardwareRfdcCorrection,
-            videoStandard = VideoStandard.AUTO.nativeValue,
-        )
-        if (sessionHandle == 0L) {
-            val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
-            connection.close()
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\nprobe_session_failed: $nativeError",
-            )
-        }
-
+        var sessionHandle = 0L
         return try {
+            val iqMetricsDiagnostic = probePlutoIqMetrics(
+                uri = uri,
+                sampleRateHz = config.sampleRateHz,
+                centerFrequencyHz = config.centerFrequencyHz,
+                rfBandwidthHz = config.rfBandwidthHz,
+                gainDb = config.gainDb,
+                sampleFormat = config.sampleFormat.nativeValue,
+                loOffsetHz = config.loOffsetHz,
+                hardwareIqCorrection = config.hardwareIqCorrection,
+                hardwareBbdcCorrection = config.hardwareBbdcCorrection,
+                hardwareRfdcCorrection = config.hardwareRfdcCorrection,
+                windowMs = scannerIqMetricsWindowMs(profile),
+            )
+            sessionHandle = createPlutoAnalogVideoPlaybackSession(
+                uri = uri,
+                sampleRateHz = config.sampleRateHz,
+                centerFrequencyHz = config.centerFrequencyHz,
+                rfBandwidthHz = config.rfBandwidthHz,
+                gainDb = config.gainDb,
+                sampleFormat = config.sampleFormat.nativeValue,
+                loOffsetHz = config.loOffsetHz,
+                hardwareIqCorrection = config.hardwareIqCorrection,
+                hardwareBbdcCorrection = config.hardwareBbdcCorrection,
+                hardwareRfdcCorrection = config.hardwareRfdcCorrection,
+                videoStandard = VideoStandard.AUTO.nativeValue,
+            )
+            if (sessionHandle == 0L) {
+                val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                return SignalProbeResult(
+                    signalPresent = false,
+                    signalType = SignalType.UNKNOWN,
+                    rssiDbfs = null,
+                    confidence = 0.0,
+                    previewFrame = null,
+                    diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\n$iqMetricsDiagnostic\nprobe_session_failed: $nativeError\n" +
+                        networkSelection.diagnostics,
+                )
+            }
+
             Thread.sleep(SCANNER_RETUNE_SETTLE_MS)
             val discardedFrames = scannerProbeDiscardFrameCount(profile)
             repeat(discardedFrames) {
@@ -789,18 +808,27 @@ class MainActivity : AppCompatActivity() {
             val analogDetected = detectedFrameCount >= scannerRequiredDetectedFrameCount(profile) &&
                 bestConfidence >= SCANNER_MIN_ANALOG_CONFIDENCE
             val previewQuality = bestFrame?.bitmap?.let { imageQualityScore(it) } ?: 0.0
-            SignalProbeResult(
+            val result = SignalProbeResult(
                 signalPresent = analogDetected,
                 signalType = if (analogDetected) SignalType.ANALOG else SignalType.UNKNOWN,
                 rssiDbfs = if (analogDetected) estimateRssiDbfs(bestConfidence) else null,
                 confidence = bestConfidence,
                 previewFrame = if (analogDetected) bestFrame?.bitmap else null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${config.sampleFormat.metadataValue}\nscanner_iio_interface: ${iioInterface.usbInterface.name ?: "IIO"}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$bestDiagnostic",
+                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${config.sampleFormat.metadataValue}\nscanner_iio_transport: ip_iio\nscanner_android_network: ${networkLabel(plutoNetwork)}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$iqMetricsDiagnostic\n$bestDiagnostic",
                 imageQuality = if (analogDetected) previewQuality else 0.0,
             )
+            val metrics = gainMetricsFromDiagnostics(
+                iqMetricsDiagnostic = iqMetricsDiagnostic,
+                videoDiagnostic = bestDiagnostic,
+                videoConfidence = bestConfidence,
+            )
+            gainController.update(metrics)
+            result
         } finally {
-            closeAnalogVideoPlaybackSession(sessionHandle)
-            connection.close()
+            if (sessionHandle != 0L) {
+                closeAnalogVideoPlaybackSession(sessionHandle)
+            }
+            restorePlaybackNetworkBinding(previousBoundNetwork, plutoNetwork)
         }
     }
 
@@ -842,6 +870,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun scannerIqMetricsWindowMs(profile: ScannerProbeProfile): Double {
+        return when (profile) {
+            ScannerProbeProfile.QUICK -> SCANNER_QUICK_IQ_METRICS_WINDOW_MS
+            ScannerProbeProfile.DEEP_CONFIRM -> SCANNER_DEEP_IQ_METRICS_WINDOW_MS
+        }
+    }
+
+    private fun gainMetricsFromDiagnostics(
+        iqMetricsDiagnostic: String,
+        videoDiagnostic: String,
+        videoConfidence: Double,
+    ): GainMetrics {
+        val peakDbfs = diagnosticNumber(iqMetricsDiagnostic, "peak_dbfs")
+            ?: diagnosticNumber(videoDiagnostic, "peak_level_dbfs")
+            ?: Double.NaN
+        val rmsDbfs = diagnosticNumber(iqMetricsDiagnostic, "rms_dbfs") ?: Double.NaN
+        val noiseFloorDbfs = diagnosticNumber(iqMetricsDiagnostic, "noise_floor_dbfs") ?: Double.NaN
+        val snrDb = diagnosticNumber(iqMetricsDiagnostic, "snr_db") ?: Double.NaN
+        return GainMetrics(
+            peakDbfs = peakDbfs,
+            rmsDbfs = rmsDbfs,
+            noiseFloorDbfs = noiseFloorDbfs,
+            snrDb = snrDb,
+            videoConfidence = videoConfidence.coerceIn(0.0, 1.0),
+            syncConfidence = syncConfidence(videoDiagnostic),
+        )
+    }
+
     private fun isAnalogVideoDetected(diagnostic: String): Boolean {
         val syncLocked = diagnostic.contains("sync_locked: yes", ignoreCase = true) ||
             diagnostic.contains("sync_locked=yes", ignoreCase = true)
@@ -877,6 +933,21 @@ class MainActivity : AppCompatActivity() {
         val frameSyncBoost = (frameSyncEdges / 4.0).coerceIn(0.0, 1.0) * 0.15
         val syncCountScore = (syncCount / 260.0).coerceIn(0.0, 1.0) * 0.20
         return (base + frameSyncBoost + syncCountScore + syncScore * 0.25 + lineStability * 0.20)
+            .coerceIn(0.0, 1.0)
+    }
+
+    private fun syncConfidence(diagnostic: String): Double {
+        val syncLocked = diagnostic.contains("sync_locked: yes", ignoreCase = true) ||
+            diagnostic.contains("sync_locked=yes", ignoreCase = true)
+        val syncScore = diagnosticNumber(diagnostic, "sync_score") ?: 0.0
+        val lineStability = diagnosticNumber(diagnostic, "line_stability")
+            ?: diagnosticNumber(diagnostic, "line_stability_score")
+            ?: 0.0
+        val frameSyncEdges = diagnosticNumber(diagnostic, "frame_sync_edges")
+            ?: diagnosticNumber(diagnostic, "detected_frame_sync_edges")
+            ?: 0.0
+        val lockBoost = if (syncLocked) 0.45 else 0.0
+        return (lockBoost + syncScore * 0.35 + lineStability * 0.25 + (frameSyncEdges / 4.0) * 0.15)
             .coerceIn(0.0, 1.0)
     }
 
@@ -1100,10 +1171,16 @@ class MainActivity : AppCompatActivity() {
         stopSpectrum()
         stopPlayback()
         selectedPlaybackChannel = channel
+        gainController.tuneChannel(channel, "selected playback tune")
         scanController.lockPlaying()
         activeMode = ActiveMode.PLUTO_IP_PLAYBACK
         updateScannerUi()
-        preparePlutoIpIioPlayback(VideoStandard.AUTO, configForChannel(channel).forcedSampleFormat(IqSampleFormat.CS8))
+        preparePlutoIpIioPlayback(
+            VideoStandard.AUTO,
+            configForChannel(channel)
+                .forcedSampleFormat(IqSampleFormat.CS8)
+                .copy(gainDb = gainController.currentPlutoGainDb),
+        )
     }
 
     private fun retunePlaybackToAdjacentChannel(direction: Int) {
@@ -1197,7 +1274,12 @@ class MainActivity : AppCompatActivity() {
                     scanController.lockPlaying()
                     updateScannerUi()
                     binding.videoFrameContainer.visibility = View.VISIBLE
-                    preparePlutoIpIioPlayback(VideoStandard.AUTO, configForChannel(selected).forcedSampleFormat(IqSampleFormat.CS8))
+                    preparePlutoIpIioPlayback(
+                        VideoStandard.AUTO,
+                        configForChannel(selected)
+                            .forcedSampleFormat(IqSampleFormat.CS8)
+                            .copy(gainDb = gainController.currentPlutoGainDb),
+                    )
                     scheduleBackgroundScanWhilePlaying()
                 } else {
                     updateScannerUi()
@@ -3758,6 +3840,17 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun defaultGainControllerConfig(): GainControllerConfig {
+        return GainControllerConfig(
+            rfFrontendMode = RfFrontendMode.DIRECT_PLUTO,
+            enableExternalFrontend = false,
+            enableLnaBypass = false,
+            defaultLnaState = LnaState.ON,
+            scanPlutoGainDb = SCAN_PLUTO_GAIN_DB,
+            scanAttenuationDb = AttenuationDb.DB_0,
+        )
+    }
+
     private fun loadPlutoIqConfigDefaults(): PlutoIqConfig {
         val defaults = defaultPlutoIqConfig()
         val preferences = getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
@@ -4167,6 +4260,20 @@ class MainActivity : AppCompatActivity() {
         durationSec: Double,
     ): String
 
+    external fun probePlutoIqMetrics(
+        uri: String,
+        sampleRateHz: Long,
+        centerFrequencyHz: Long,
+        rfBandwidthHz: Long,
+        gainDb: Double,
+        sampleFormat: Int,
+        loOffsetHz: Long,
+        hardwareIqCorrection: Boolean,
+        hardwareBbdcCorrection: Boolean,
+        hardwareRfdcCorrection: Boolean,
+        windowMs: Double,
+    ): String
+
     external fun isPlutoCaptureAvailable(): Boolean
 
     external fun isPlutoUsbCaptureAvailable(): Boolean
@@ -4314,8 +4421,12 @@ class MainActivity : AppCompatActivity() {
         private const val SCANNER_DEEP_FAST_PROBE_FRAME_COUNT = 3
         private const val SCANNER_DEEP_CONFIRM_PROBE_FRAME_COUNT = 5
         private const val SCANNER_DEEP_REQUIRED_DETECTED_FRAME_COUNT = 2
+        private const val SCANNER_QUICK_IQ_METRICS_WINDOW_MS = 25.0
+        private const val SCANNER_DEEP_IQ_METRICS_WINDOW_MS = 15.0
+        private const val SCANNER_GAIN_ACQUISITION_CONFIRMATION_PASSES = 5
         private const val SCANNER_CONFIRMATION_CONFIDENCE = 0.35
         private const val SCANNER_MIN_ANALOG_CONFIDENCE = 0.50
+        private const val SCAN_PLUTO_GAIN_DB = 38.0
         private const val SCANNER_NEARBY_CHANNEL_RADIUS_HZ = 12_000_000L
         private const val SCANNER_NEARBY_CHANNEL_Q_SWITCH_MARGIN = 0.03
         private const val SCANNER_NEARBY_CHANNEL_Q_TIE_MARGIN = 0.01

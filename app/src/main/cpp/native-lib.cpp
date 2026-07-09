@@ -40,6 +40,8 @@ constexpr std::size_t kPlutoLiveSpectrumBufferSamples = 1024;
 constexpr std::size_t kPlutoLiveStreamBlockCount = 4;
 constexpr std::size_t kPlutoCaptureBufferSamples = 32768;
 constexpr std::size_t kPlutoCaptureStreamBlockCount = 4;
+constexpr std::size_t kPlutoMetricsReadBlockSamples = 32768;
+constexpr std::size_t kPlutoMetricsStreamBlockCount = 2;
 constexpr std::uint64_t kDefaultPlaybackAnalysisRateHz = 1500000;
 constexpr std::uint64_t kWebSocketCs8PlaybackAnalysisRateHz = 10000000;
 constexpr double kDefaultPlaybackVideoCutoffHz = 5000000.0;
@@ -1118,6 +1120,119 @@ SpectrumViewSession* createPlutoSpectrumSession(
     return session.release();
 }
 
+std::string probePlutoIqMetrics(
+        const std::string& uri,
+        std::uint64_t sampleRateHz,
+        std::uint64_t centerFrequencyHz,
+        std::uint64_t rfBandwidthHz,
+        double gainDb,
+        sdr::SampleEncoding sampleEncoding,
+        std::int64_t loOffsetHz,
+        bool hardwareIqCorrection,
+        bool hardwareBbdcCorrection,
+        bool hardwareRfdcCorrection,
+        double windowMs) {
+    if (sampleRateHz == 0 || centerFrequencyHz == 0 || rfBandwidthHz == 0 || windowMs <= 0.0) {
+        return "Pluto IQ metrics\nstatus: failed\nerror: invalid parameters";
+    }
+
+    sdr::PlutoSourceConfig config;
+    config.uri = uri.empty() ? "usb:" : uri;
+    config.sampleRateHz = sampleRateHz;
+    config.centerFrequencyHz = centerFrequencyHz;
+    config.rfBandwidthHz = rfBandwidthHz;
+    config.gainDb = gainDb;
+    config.sampleEncoding = sampleEncoding;
+    config.loOffsetHz = loOffsetHz;
+    config.hardwareIqCorrection = hardwareIqCorrection;
+    config.hardwareBbdcCorrection = hardwareBbdcCorrection;
+    config.hardwareRfdcCorrection = hardwareRfdcCorrection;
+    config.bufferSamples = kPlutoMetricsReadBlockSamples;
+    config.streamBlockCount = kPlutoMetricsStreamBlockCount;
+
+    sdr::PlutoSource source(config);
+    const auto openStatus = source.open();
+    if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
+        return "Pluto IQ metrics\nstatus: failed\nerror: " + openStatus.message;
+    }
+
+    const auto requestedSamples = static_cast<std::size_t>(
+            std::max<double>(1.0, (static_cast<double>(sampleRateHz) * windowMs) / 1000.0));
+    sdr::SampleBuffer buffer;
+    std::vector<float> normalizedPowers;
+    normalizedPowers.reserve(std::min<std::size_t>(requestedSamples, sampleRateHz / 10U));
+
+    std::size_t totalSamples = 0;
+    double powerSum = 0.0;
+    double peakPower = 0.0;
+    while (totalSamples < requestedSamples) {
+        const auto samplesToRead = std::min<std::size_t>(
+                kPlutoMetricsReadBlockSamples,
+                requestedSamples - totalSamples);
+        const auto readResult = source.read(buffer, samplesToRead);
+        if (!readResult.ok()) {
+            setLastNativeError(readResult.message);
+            return "Pluto IQ metrics\nstatus: failed\nerror: " + readResult.message;
+        }
+        if (readResult.samplesRead == 0) {
+            break;
+        }
+
+        for (std::size_t index = 0; index < readResult.samplesRead; ++index) {
+            const double i = static_cast<double>(buffer.i(index)) / kCs16FullScale;
+            const double q = static_cast<double>(buffer.q(index)) / kCs16FullScale;
+            const double power = ((i * i) + (q * q)) * 0.5;
+            peakPower = std::max(peakPower, power);
+            powerSum += power;
+            normalizedPowers.push_back(static_cast<float>(power));
+        }
+        totalSamples += readResult.samplesRead;
+        if (readResult.endOfStream) {
+            break;
+        }
+    }
+
+    if (totalSamples == 0 || normalizedPowers.empty()) {
+        return "Pluto IQ metrics\nstatus: failed\nerror: no samples read";
+    }
+
+    const auto noiseCount = std::max<std::size_t>(1U, normalizedPowers.size() / 10U);
+    std::nth_element(
+            normalizedPowers.begin(),
+            normalizedPowers.begin() + static_cast<std::ptrdiff_t>(noiseCount - 1U),
+            normalizedPowers.end());
+    double noisePowerSum = 0.0;
+    for (std::size_t index = 0; index < noiseCount; ++index) {
+        noisePowerSum += normalizedPowers[index];
+    }
+
+    constexpr double kMinPower = 1.0e-20;
+    const double rmsPower = powerSum / static_cast<double>(totalSamples);
+    const double noisePower = noisePowerSum / static_cast<double>(noiseCount);
+    const double peakDbfs = 10.0 * std::log10(std::max(peakPower, kMinPower));
+    const double rmsDbfs = 10.0 * std::log10(std::max(rmsPower, kMinPower));
+    const double noiseFloorDbfs = 10.0 * std::log10(std::max(noisePower, kMinPower));
+    const double snrDb = rmsDbfs - noiseFloorDbfs;
+
+    std::ostringstream diagnostic;
+    diagnostic << "Pluto IQ metrics\n"
+               << "status: ok\n"
+               << "uri: " << config.uri << "\n"
+               << "sample_format: " << sampleEncodingName(sampleEncoding) << "\n"
+               << "sample_rate_hz: " << sampleRateHz << "\n"
+               << "center_frequency_hz: " << centerFrequencyHz << "\n"
+               << "rf_bandwidth_hz: " << rfBandwidthHz << "\n"
+               << "gain_db: " << gainDb << "\n"
+               << "window_ms: " << windowMs << "\n"
+               << "samples_read: " << totalSamples << "\n"
+               << "peak_dbfs: " << peakDbfs << "\n"
+               << "rms_dbfs: " << rmsDbfs << "\n"
+               << "noise_floor_dbfs: " << noiseFloorDbfs << "\n"
+               << "snr_db: " << snrDb;
+    return diagnostic.str();
+}
+
 AnalogPlaybackSession* createMaiaPlaybackSession(
         JNIEnv* env,
         const std::string& host,
@@ -1696,6 +1811,37 @@ Java_com_example_sdrvideoscanner_MainActivity_capturePlutoIqToFile(
             hardwareBbdcCorrection == JNI_TRUE,
             hardwareRfdcCorrection == JNI_TRUE,
             static_cast<double>(durationSec));
+    return env->NewStringUTF(diagnostic.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_sdrvideoscanner_MainActivity_probePlutoIqMetrics(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring uri,
+        jlong sampleRateHz,
+        jlong centerFrequencyHz,
+        jlong rfBandwidthHz,
+        jdouble gainDb,
+        jint sampleFormat,
+        jlong loOffsetHz,
+        jboolean hardwareIqCorrection,
+        jboolean hardwareBbdcCorrection,
+        jboolean hardwareRfdcCorrection,
+        jdouble windowMs) {
+    const auto uriValue = stringFromJString(env, uri);
+    const auto diagnostic = probePlutoIqMetrics(
+            uriValue,
+            positiveJLongOrZero(sampleRateHz),
+            positiveJLongOrZero(centerFrequencyHz),
+            positiveJLongOrZero(rfBandwidthHz),
+            static_cast<double>(gainDb),
+            sampleEncodingFromJInt(sampleFormat),
+            static_cast<std::int64_t>(loOffsetHz),
+            hardwareIqCorrection == JNI_TRUE,
+            hardwareBbdcCorrection == JNI_TRUE,
+            hardwareRfdcCorrection == JNI_TRUE,
+            static_cast<double>(windowMs));
     return env->NewStringUTF(diagnostic.c_str());
 }
 
