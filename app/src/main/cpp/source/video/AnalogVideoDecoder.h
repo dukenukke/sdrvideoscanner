@@ -36,7 +36,14 @@ public:
 
 private:
     std::size_t frameSampleCount();
+    double frameReadGuardLines() const;
     std::size_t samplesPerLine() const;
+    std::size_t sampleLockedFieldStartSyncIndex(
+            const std::vector<std::size_t>& syncStarts,
+            const std::vector<std::size_t>& frameSyncEdges,
+            std::size_t candidateStartSyncIndex,
+            std::uint64_t videoSampleRateHz,
+            std::size_t videoSampleCount);
     std::size_t lockedFieldStartSyncIndex(
             std::size_t candidateStartSyncIndex,
             std::size_t detectedSyncCount);
@@ -56,6 +63,12 @@ private:
     std::size_t fieldStartSyncIndex_ = 0;
     std::size_t pendingFieldStartSyncIndex_ = 0;
     std::size_t fieldStartRejectCount_ = 0;
+    bool verticalSampleLock_ = false;
+    double lockedVEdgeSample_ = 0.0;
+    double pendingVEdgeSample_ = 0.0;
+    double videoSampleCursor_ = 0.0;
+    double lastVEdgeResidualSamples_ = 0.0;
+    std::size_t verticalRelockCount_ = 0;
 };
 
 }  // namespace sdr

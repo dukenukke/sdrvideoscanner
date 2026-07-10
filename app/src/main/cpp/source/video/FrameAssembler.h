@@ -65,6 +65,11 @@ private:
             const std::vector<std::size_t>& frameSyncEdges,
             std::size_t activeOffset,
             std::size_t samplesPerActiveLine) const;
+    std::size_t chooseInterlacedStartFromActiveWindow(
+            const std::vector<std::uint8_t>& video,
+            const std::vector<std::size_t>& syncStarts,
+            std::size_t activeOffset,
+            std::size_t samplesPerActiveLine) const;
     std::size_t chooseInterlacedStartFromFrameSync(
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,

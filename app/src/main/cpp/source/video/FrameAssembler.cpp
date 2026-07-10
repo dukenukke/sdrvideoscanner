@@ -7,6 +7,11 @@
 #include <vector>
 
 namespace sdr {
+namespace {
+
+constexpr std::size_t kMaxLockedFieldPhaseDistanceLines = 6U;
+
+}  // namespace
 
 const char* videoStandardName(VideoStandard standard) {
     switch (standard) {
@@ -215,14 +220,13 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
     const auto lineLengthSamples = samplesPerLine(sampleRateHz);
     const auto activeOffset = activeStartOffset(sampleRateHz);
     const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
+    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
             video,
             syncStarts,
-            frameSyncEdges,
             activeOffset,
             samplesPerActiveLine);
-    if (frameSyncStart != static_cast<std::size_t>(-1)) {
-        return frameSyncStart;
+    if (activeWindowStart != static_cast<std::size_t>(-1)) {
+        return activeWindowStart;
     }
 
     const auto verticalBlankingStart = chooseInterlacedStartFromVerticalBlanking(
@@ -232,6 +236,16 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
             samplesPerActiveLine);
     if (verticalBlankingStart != static_cast<std::size_t>(-1)) {
         return verticalBlankingStart;
+    }
+
+    const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
+            video,
+            syncStarts,
+            frameSyncEdges,
+            activeOffset,
+            samplesPerActiveLine);
+    if (frameSyncStart != static_cast<std::size_t>(-1)) {
+        return frameSyncStart;
     }
 
     return chooseInterlacedStartSyncIndex(
@@ -319,9 +333,31 @@ std::size_t FrameAssembler::chooseInterlacedStartSyncIndex(
         return frameSyncStart;
     }
 
+    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
+            video,
+            syncStarts,
+            activeOffset,
+            samplesPerActiveLine);
+    if (activeWindowStart != static_cast<std::size_t>(-1)) {
+        return activeWindowStart;
+    }
+
+    return 0;
+}
+
+std::size_t FrameAssembler::chooseInterlacedStartFromActiveWindow(
+        const std::vector<std::uint8_t>& video,
+        const std::vector<std::size_t>& syncStarts,
+        std::size_t activeOffset,
+        std::size_t samplesPerActiveLine) const {
+    const auto sourceLineCount = interlacedSourceLineCount();
+    if (!shouldBobInterlaced() || sourceLineCount == 0 || syncStarts.empty()) {
+        return static_cast<std::size_t>(-1);
+    }
+
     const auto requiredSyncSpan = sourceLineCount - 1U;
     if (syncStarts.size() <= requiredSyncSpan) {
-        return 0;
+        return static_cast<std::size_t>(-1);
     }
 
     std::size_t bestStart = 0;
@@ -563,6 +599,9 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
                                 static_cast<long long>(preferredStartSyncIndex))));
             }
         }
+        if (phaseDistance > kMaxLockedFieldPhaseDistanceLines) {
+            continue;
+        }
 
         const bool betterPhase = phaseDistance < bestPhaseDistance;
         const bool closePhaseAndMoreLines =
@@ -658,9 +697,13 @@ std::vector<std::size_t> FrameAssembler::chooseReferenceBobFieldStarts(
             phaseDistance = std::min<std::size_t>(
                     phaseDistance,
                     static_cast<std::size_t>(std::abs(
-                            static_cast<long long>(shiftedBackward) -
-                            static_cast<long long>(boundedPreferredStartSyncIndex))));
+                        static_cast<long long>(shiftedBackward) -
+                        static_cast<long long>(boundedPreferredStartSyncIndex))));
         }
+        if (phaseDistance > kMaxLockedFieldPhaseDistanceLines) {
+            continue;
+        }
+
         const bool betterPhase = phaseDistance < bestPhaseDistance;
         const bool samePhaseBetterQuality =
                 phaseDistance == bestPhaseDistance && quality > bestQuality;

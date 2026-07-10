@@ -445,6 +445,8 @@ class MainActivity : AppCompatActivity() {
     private fun startScannerModeAfterPreflight(config: PlutoIqConfig) {
         plutoIqConfig = config
         pendingPlutoIqConfig = config
+        activeMode = ActiveMode.PLUTO_SCANNER
+        rememberPlutoSession(ActiveMode.PLUTO_SCANNER, VideoStandard.AUTO, config)
         scanSessionId += 1L
         scannerRunning = true
         updateSleepBlocker()
@@ -458,10 +460,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopScannerMode() {
+        val previousMode = activeMode
         scanSessionId += 1L
         scannerRunning = false
         selectedPlaybackChannel = null
         currentScannerChannel = null
+        if (activeMode == ActiveMode.PLUTO_SCANNER) {
+            activeMode = ActiveMode.NONE
+        }
+        clearPlutoSessionIfManualStop(previousMode)
         scanController.idle()
         updateSleepBlocker()
         renderSignalTable()
@@ -473,6 +480,8 @@ class MainActivity : AppCompatActivity() {
         selectedPlaybackChannel = null
         currentScannerChannel = null
         stopPlayback()
+        activeMode = ActiveMode.PLUTO_SCANNER
+        rememberPlutoSession(ActiveMode.PLUTO_SCANNER, VideoStandard.AUTO, plutoIqConfig)
         scanSessionId += 1L
         scannerRunning = true
         updateSleepBlocker()
@@ -577,7 +586,8 @@ class MainActivity : AppCompatActivity() {
         return when (scanController.state) {
             ScannerState.SCANNING,
             ScannerState.CANDIDATE_DETECTED,
-            ScannerState.BACKGROUND_SCAN_WHILE_PLAYING -> currentScannerChannel
+            ScannerState.BACKGROUND_SCAN_WHILE_PLAYING,
+            ScannerState.ERROR -> currentScannerChannel
             ScannerState.LOCKED_PLAYING -> selectedPlaybackChannel
             ScannerState.IDLE -> null
         }
@@ -611,6 +621,10 @@ class MainActivity : AppCompatActivity() {
                     activeScanSessionId != scanSessionId) {
                     return@post
                 }
+                if (confirmed.result.sourceFailed) {
+                    handleScannerPlutoRuntimeFailure(confirmed.channel, confirmed.result)
+                    return@post
+                }
                 scanController.applyProbeResult(confirmed.channel, confirmed.result)
                 scanController.expireStaleRecords()
                 renderSignalTable()
@@ -627,7 +641,13 @@ class MainActivity : AppCompatActivity() {
         channel: KnownChannel,
         initialResult: SignalProbeResult,
     ): ScannerProbeSelection {
+        if (initialResult.sourceFailed) {
+            return ScannerProbeSelection(channel, initialResult)
+        }
         var confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
+        if (confirmationResult.sourceFailed) {
+            return ScannerProbeSelection(channel, confirmationResult)
+        }
         var acquisitionPasses = 1
         while (
             confirmationResult.signalPresent &&
@@ -635,6 +655,9 @@ class MainActivity : AppCompatActivity() {
             acquisitionPasses < SCANNER_GAIN_ACQUISITION_CONFIRMATION_PASSES
         ) {
             confirmationResult = probeChannelForSignal(channel, ScannerProbeProfile.DEEP_CONFIRM)
+            if (confirmationResult.sourceFailed) {
+                return ScannerProbeSelection(channel, confirmationResult)
+            }
             acquisitionPasses += 1
         }
 
@@ -670,6 +693,9 @@ class MainActivity : AppCompatActivity() {
 
         for (nearbyChannel in nearbyAnalogChannels(channel)) {
             val nearbyResult = probeChannelForSignal(nearbyChannel, ScannerProbeProfile.DEEP_CONFIRM)
+            if (nearbyResult.sourceFailed) {
+                return ScannerProbeSelection(nearbyChannel, nearbyResult)
+            }
             if (!nearbyResult.signalPresent) {
                 continue
             }
@@ -720,27 +746,21 @@ class MainActivity : AppCompatActivity() {
         val networkSelection = waitForPlutoIioNetworkWithDiagnostics(host)
         val plutoNetwork = networkSelection.network
         if (plutoNetwork == null || plutoNetwork.networkHandle == 0L) {
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\nscanner_probe_skipped: Pluto IP IIO network was not found\n" +
-                    networkSelection.diagnostics,
+            return scannerSourceFailureResult(
+                uri = uri,
+                config = config,
+                reason = "Pluto IP IIO network was not found",
+                diagnostic = networkSelection.diagnostics,
             )
         }
 
         val previousBoundNetwork = connectivityManager.boundNetworkForProcess
         if (!connectivityManager.bindProcessToNetwork(plutoNetwork)) {
-            return SignalProbeResult(
-                signalPresent = false,
-                signalType = SignalType.UNKNOWN,
-                rssiDbfs = null,
-                confidence = 0.0,
-                previewFrame = null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\nscanner_probe_skipped: bindProcessToNetwork failed for ${networkLabel(plutoNetwork)}\n" +
-                    networkSelection.diagnostics,
+            return scannerSourceFailureResult(
+                uri = uri,
+                config = config,
+                reason = "bindProcessToNetwork failed for ${networkLabel(plutoNetwork)}",
+                diagnostic = networkSelection.diagnostics,
             )
         }
 
@@ -759,6 +779,15 @@ class MainActivity : AppCompatActivity() {
                 hardwareRfdcCorrection = config.hardwareRfdcCorrection,
                 windowMs = scannerIqMetricsWindowMs(profile),
             )
+            if (plutoNativeDiagnosticFailed(iqMetricsDiagnostic)) {
+                val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                return scannerSourceFailureResult(
+                    uri = uri,
+                    config = config,
+                    reason = "Pluto IQ metrics probe failed",
+                    diagnostic = "$iqMetricsDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                )
+            }
             sessionHandle = createPlutoAnalogVideoPlaybackSession(
                 uri = uri,
                 sampleRateHz = config.sampleRateHz,
@@ -774,33 +803,61 @@ class MainActivity : AppCompatActivity() {
             )
             if (sessionHandle == 0L) {
                 val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
-                return SignalProbeResult(
-                    signalPresent = false,
-                    signalType = SignalType.UNKNOWN,
-                    rssiDbfs = null,
-                    confidence = 0.0,
-                    previewFrame = null,
-                    diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_uri: $uri\n$iqMetricsDiagnostic\nprobe_session_failed: $nativeError\n" +
-                        networkSelection.diagnostics,
+                return scannerSourceFailureResult(
+                    uri = uri,
+                    config = config,
+                    reason = "native Pluto playback probe session could not be created",
+                    diagnostic = "$iqMetricsDiagnostic\nprobe_session_failed: $nativeError\n${networkSelection.diagnostics}",
                 )
             }
 
             Thread.sleep(SCANNER_RETUNE_SETTLE_MS)
             val discardedFrames = scannerProbeDiscardFrameCount(profile)
-            repeat(discardedFrames) {
-                decodeNextAnalogVideoPlaybackFrame(sessionHandle)
+            repeat(discardedFrames) { discardIndex ->
+                val packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle)
+                if (packet.isEmpty()) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    return scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto playback probe returned no frame while discarding frame $discardIndex",
+                        diagnostic = "$iqMetricsDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                }
             }
             var bestFrame: DecodedFrame? = null
             var bestDiagnostic = ""
             var bestConfidence = 0.0
             var detectedFrameCount = 0
+            var sourceFailureResult: SignalProbeResult? = null
 
-            fun scoreNextFrame() {
+            fun scoreNextFrame(frameIndex: Int): Boolean {
+                val packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle)
+                if (packet.isEmpty()) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    sourceFailureResult = scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto playback probe returned no frame at scored frame $frameIndex",
+                        diagnostic = "$iqMetricsDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                    return false
+                }
                 val frame = grayscaleFramePacketToBitmap(
-                    packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle),
+                    packet = packet,
                     includeDiagnostic = true,
                 )
-                val diagnostic = frame?.diagnostic.orEmpty()
+                if (frame == null) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    sourceFailureResult = scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto playback probe returned a malformed frame packet at scored frame $frameIndex",
+                        diagnostic = "$iqMetricsDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                    return false
+                }
+                val diagnostic = frame.diagnostic
                 val confidence = analogConfidence(diagnostic)
                 if (isAnalogVideoDetected(diagnostic)) {
                     detectedFrameCount += 1
@@ -810,17 +867,32 @@ class MainActivity : AppCompatActivity() {
                     bestDiagnostic = diagnostic
                     bestConfidence = confidence
                 }
+                return true
             }
 
-            repeat(scannerFastProbeFrameCount(profile)) {
-                scoreNextFrame()
+            repeat(scannerFastProbeFrameCount(profile)) { index ->
+                if (!scoreNextFrame(index)) {
+                    return sourceFailureResult ?: scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto playback probe failed",
+                        diagnostic = "$iqMetricsDiagnostic\n${networkSelection.diagnostics}",
+                    )
+                }
             }
 
             val needsConfirmation = detectedFrameCount > 0 ||
                 bestConfidence >= SCANNER_CONFIRMATION_CONFIDENCE
             if (needsConfirmation) {
-                repeat(scannerConfirmProbeFrameCount(profile)) {
-                    scoreNextFrame()
+                repeat(scannerConfirmProbeFrameCount(profile)) { index ->
+                    if (!scoreNextFrame(scannerFastProbeFrameCount(profile) + index)) {
+                        return sourceFailureResult ?: scannerSourceFailureResult(
+                            uri = uri,
+                            config = config,
+                            reason = "native Pluto playback confirmation probe failed",
+                            diagnostic = "$iqMetricsDiagnostic\n${networkSelection.diagnostics}",
+                        )
+                    }
                 }
             }
 
@@ -896,6 +968,39 @@ class MainActivity : AppCompatActivity() {
             ScannerProbeProfile.QUICK -> SCANNER_QUICK_IQ_METRICS_WINDOW_MS
             ScannerProbeProfile.DEEP_CONFIRM -> SCANNER_DEEP_IQ_METRICS_WINDOW_MS
         }
+    }
+
+    private fun plutoNativeDiagnosticFailed(diagnostic: String): Boolean {
+        return Regex("""(?m)^\s*status\s*:\s*failed\s*$""").containsMatchIn(diagnostic)
+    }
+
+    private fun scannerSourceFailureResult(
+        uri: String,
+        config: PlutoIqConfig,
+        reason: String,
+        diagnostic: String,
+    ): SignalProbeResult {
+        return SignalProbeResult(
+            signalPresent = false,
+            signalType = SignalType.UNKNOWN,
+            rssiDbfs = null,
+            confidence = 0.0,
+            previewFrame = null,
+            diagnostic = buildString {
+                append("scanner_stage: cs8_libiio_video_decode")
+                append("\nscanner_source_failed: true")
+                append("\nscanner_source_failure_reason: $reason")
+                append("\nscanner_uri: $uri")
+                append("\nscanner_sample_format: ${config.sampleFormat.metadataValue}")
+                append("\nscanner_iio_transport: ip_iio")
+                append("\nscanner_center_frequency_hz: ${config.centerFrequencyHz}")
+                if (diagnostic.isNotBlank()) {
+                    append("\n")
+                    append(diagnostic)
+                }
+            },
+            sourceFailed = true,
+        )
     }
 
     private fun gainMetricsFromDiagnostics(
@@ -1416,9 +1521,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun plutoConnectionStatus(snapshot: PlutoSessionRecovery): PlutoConnectionStatus {
         return when (snapshot.mode) {
+            ActiveMode.PLUTO_SCANNER,
+            ActiveMode.PLUTO_IP_PLAYBACK -> plutoIpIioConnectionStatus(snapshot.config)
             ActiveMode.PLUTO_USB_PLAYBACK,
             ActiveMode.PLUTO_USB_SPECTRUM -> directUsbPlutoConnectionStatus()
-            ActiveMode.PLUTO_IP_PLAYBACK -> plutoIpIioConnectionStatus()
             ActiveMode.PLUTO_WS_PLAYBACK,
             ActiveMode.PLUTO_WS_SPECTRUM -> webSocketPlutoConnectionStatus()
             else -> PlutoConnectionStatus(connected = true, diagnostic = "pluto_monitor: mode ${snapshot.mode} is not monitored")
@@ -1464,23 +1570,33 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun plutoIpIioConnectionStatus(): PlutoConnectionStatus {
-        val selection = findPlutoNetworkWithDiagnostics(MAIA_DEFAULT_HOST)
+    private fun plutoIpIioConnectionStatus(config: PlutoIqConfig): PlutoConnectionStatus {
+        val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
+        val selection = findPlutoNetworkWithDiagnostics(host)
         val network = selection.network
         if (network == null || network.networkHandle == 0L) {
             return PlutoConnectionStatus(
                 connected = false,
-                diagnostic = "pluto_ip_iio: Android network to $MAIA_DEFAULT_HOST missing\n${selection.diagnostics}",
+                diagnostic = "pluto_ip_iio: Android network to $host missing\n${selection.diagnostics}",
+            )
+        }
+        val tcpTest = testPlutoIiodTcpConnection(network, host)
+        if (!tcpTest.connectionEstablished) {
+            return PlutoConnectionStatus(
+                connected = false,
+                diagnostic = "pluto_ip_iio: iiod TCP $host:$PLUTO_IP_IIO_PORT unreachable on ${networkLabel(network)}\n" +
+                    selection.diagnostics + "\n" + tcpTest.diagnostics,
             )
         }
         return PlutoConnectionStatus(
             connected = true,
-            diagnostic = "pluto_ip_iio: network ${networkLabel(network)}",
+            diagnostic = "pluto_ip_iio: iiod TCP reachable on ${networkLabel(network)}",
         )
     }
 
     private fun isPlutoSessionActive(snapshot: PlutoSessionRecovery): Boolean {
         return when (snapshot.mode) {
+            ActiveMode.PLUTO_SCANNER -> scannerRunning
             ActiveMode.PLUTO_USB_PLAYBACK,
             ActiveMode.PLUTO_IP_PLAYBACK,
             ActiveMode.PLUTO_WS_PLAYBACK -> playbackRunning
@@ -1547,6 +1663,7 @@ class MainActivity : AppCompatActivity() {
         stoppingForPlutoRecovery = true
         try {
             when (snapshot.mode) {
+                ActiveMode.PLUTO_SCANNER -> stopScannerMode()
                 ActiveMode.PLUTO_USB_PLAYBACK,
                 ActiveMode.PLUTO_IP_PLAYBACK,
                 ActiveMode.PLUTO_WS_PLAYBACK -> stopPlayback()
@@ -1564,6 +1681,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun restartPlutoSession(snapshot: PlutoSessionRecovery) {
         when (snapshot.mode) {
+            ActiveMode.PLUTO_SCANNER -> startScannerModeAfterPreflight(snapshot.config)
             ActiveMode.PLUTO_USB_PLAYBACK -> preparePlutoUsbPlayback(snapshot.standard, snapshot.config)
             ActiveMode.PLUTO_IP_PLAYBACK -> preparePlutoIpIioPlayback(snapshot.standard, snapshot.config)
             ActiveMode.PLUTO_USB_SPECTRUM -> preparePlutoUsbSpectrum(snapshot.config)
@@ -1587,6 +1705,32 @@ class MainActivity : AppCompatActivity() {
         }
         binding.sampleText.text = "$title\n\n$details\n\nPluto monitor will retry when the connection returns. " +
             "If it remains absent for ${PLUTO_CONNECTION_ABSENT_POWER_CYCLE_MS / 1000}s, USB OTG power-cycle recovery will run."
+    }
+
+    private fun handleScannerPlutoRuntimeFailure(channel: KnownChannel, result: SignalProbeResult) {
+        val snapshot = currentPlutoSessionRecovery()
+            ?: PlutoSessionRecovery(ActiveMode.PLUTO_SCANNER, VideoStandard.AUTO, plutoIqConfig)
+        scanSessionId += 1L
+        scannerRunning = false
+        selectedPlaybackChannel = null
+        currentScannerChannel = channel
+        activeMode = ActiveMode.PLUTO_SCANNER
+        scanController.error()
+        updateSleepBlocker()
+        renderSignalTable()
+        updateScannerUi()
+        synchronized(this) {
+            plutoSessionRecovery = snapshot.copy(mode = ActiveMode.PLUTO_SCANNER)
+            plutoMissingSinceMs = SystemClock.elapsedRealtime()
+        }
+        binding.videoFrameContainer.visibility = View.GONE
+        binding.sampleText.text = buildString {
+            append("ALARM: Pluto scanner link failed. Scanning stopped.\n\n")
+            append("channel: ${channel.bandName} / ${channel.channelName} / ${formatFrequency(channel.centerFrequencyHz)}\n")
+            append("The app will retry when Pluto IP IIO is reachable. ")
+            append("If it remains absent for ${PLUTO_CONNECTION_ABSENT_POWER_CYCLE_MS / 1000}s, USB OTG power-cycle recovery will run.\n\n")
+            append(result.diagnostic)
+        }
     }
 
     private fun metadataFileFor(iqPath: String): File {
@@ -4225,6 +4369,7 @@ class MainActivity : AppCompatActivity() {
         RECORD_IQ,
         PLUTO_USB_PLAYBACK,
         PLUTO_IP_PLAYBACK,
+        PLUTO_SCANNER,
         PLUTO_USB_SPECTRUM,
         PLUTO_WS_PLAYBACK,
         PLUTO_WS_SPECTRUM,
@@ -4257,6 +4402,7 @@ class MainActivity : AppCompatActivity() {
             return when (this) {
                 PLUTO_USB_PLAYBACK -> "Pluto USB playback"
                 PLUTO_IP_PLAYBACK -> "Pluto IP IIO playback"
+                PLUTO_SCANNER -> "Pluto scanner"
                 PLUTO_USB_SPECTRUM -> "Pluto USB FFT / waterfall"
                 PLUTO_WS_PLAYBACK -> "Pluto WebSocket playback"
                 PLUTO_WS_SPECTRUM -> "Pluto WebSocket FFT / waterfall"

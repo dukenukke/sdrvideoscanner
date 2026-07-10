@@ -31,6 +31,10 @@ class ScanController(
         state = ScannerState.BACKGROUND_SCAN_WHILE_PLAYING
     }
 
+    fun error() {
+        state = ScannerState.ERROR
+    }
+
     fun idle() {
         state = ScannerState.IDLE
     }

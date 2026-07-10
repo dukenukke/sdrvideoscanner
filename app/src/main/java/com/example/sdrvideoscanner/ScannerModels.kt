@@ -21,6 +21,7 @@ enum class ScannerState {
     CANDIDATE_DETECTED,
     LOCKED_PLAYING,
     BACKGROUND_SCAN_WHILE_PLAYING,
+    ERROR,
 }
 
 data class KnownChannel(
@@ -39,6 +40,7 @@ data class SignalProbeResult(
     val previewFrame: Bitmap?,
     val diagnostic: String,
     val imageQuality: Double = 0.0,
+    val sourceFailed: Boolean = false,
 )
 
 data class DetectedSignalRecord(
