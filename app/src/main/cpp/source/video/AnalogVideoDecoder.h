@@ -37,6 +37,19 @@ public:
 private:
     std::size_t frameSampleCount();
     double frameReadGuardLines() const;
+    void resetVerticalSampleLock();
+    VideoFrame assembleBestFieldPreviewFrame(
+            const std::vector<std::uint8_t>& video,
+            const std::vector<std::size_t>& syncStarts,
+            const std::vector<std::size_t>& frameSyncEdges,
+            std::size_t preferredStartSyncIndex,
+            std::size_t candidateStartSyncIndex,
+            std::uint64_t videoSampleRateHz,
+            std::size_t& selectedStartSyncIndex);
+    void acceptVerticalSampleStart(
+            const std::vector<std::size_t>& syncStarts,
+            std::size_t selectedStartSyncIndex);
+    bool isBadSequentialFieldFrame(const VideoFrame& frame) const;
     std::size_t samplesPerLine() const;
     std::size_t sampleLockedFieldStartSyncIndex(
             const std::vector<std::size_t>& syncStarts,
@@ -66,8 +79,15 @@ private:
     bool verticalSampleLock_ = false;
     double lockedVEdgeSample_ = 0.0;
     double pendingVEdgeSample_ = 0.0;
+    double lockedActiveStartSample_ = 0.0;
+    double pendingActiveStartSample_ = 0.0;
     double videoSampleCursor_ = 0.0;
     double lastVEdgeResidualSamples_ = 0.0;
+    double lastFieldStartLineOffset_ = 0.0;
+    double lastVEdgeSample_ = 0.0;
+    double lastVEdgeQuality_ = 0.0;
+    double lastFieldPeriodError_ = 0.0;
+    double lastHSyncMissingRate_ = 0.0;
     std::size_t verticalRelockCount_ = 0;
 };
 

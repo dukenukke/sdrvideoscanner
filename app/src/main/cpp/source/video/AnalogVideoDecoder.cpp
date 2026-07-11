@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <vector>
 
 namespace sdr {
@@ -233,6 +234,16 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             sample = static_cast<std::uint8_t>(255U - sample);
         }
     }
+    const auto expectedHorizontalSyncs = samplesPerLine() > 0U
+            ? static_cast<double>(video_.size()) / static_cast<double>(samplesPerLine())
+            : 0.0;
+    lastHSyncMissingRate_ = expectedHorizontalSyncs > 1.0
+            ? std::clamp(
+                    (expectedHorizontalSyncs - static_cast<double>(syncDetection.syncStarts.size())) /
+                            expectedHorizontalSyncs,
+                    0.0,
+                    1.0)
+            : 0.0;
 
     const auto minimumUsefulSyncs = config_.fastFieldPreview
             ? static_cast<std::size_t>(
@@ -255,18 +266,31 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                                     syncDetection.frameSyncEdges,
                                     videoSampleRateHz);
                     fieldCandidateStartSyncIndex = candidateStartSyncIndex;
+                    const auto previousLockedStartSyncIndex = fieldStartSyncIndex_;
                     fieldStartSyncIndex = sampleLockedFieldStartSyncIndex(
                             syncDetection.syncStarts,
                             syncDetection.frameSyncEdges,
                             candidateStartSyncIndex,
                             videoSampleRateHz,
                             video_.size());
-                    return frameAssembler_.assembleFieldPreviewFromSync(
-                        video_,
-                        syncDetection.syncStarts,
-                        syncDetection.frameSyncEdges,
-                        fieldStartSyncIndex,
-                        videoSampleRateHz);
+                    auto selectedStartSyncIndex = fieldStartSyncIndex;
+                    auto frame = assembleBestFieldPreviewFrame(
+                            video_,
+                            syncDetection.syncStarts,
+                            syncDetection.frameSyncEdges,
+                            fieldStartSyncIndex,
+                            candidateStartSyncIndex,
+                            videoSampleRateHz,
+                            selectedStartSyncIndex);
+                    fieldStartSyncIndex = selectedStartSyncIndex;
+                    if (isBadSequentialFieldFrame(frame)) {
+                        frame.message += "; rejected bad sequential field; lock not committed";
+                        fieldStartSyncIndex = previousLockedStartSyncIndex;
+                        resetVerticalSampleLock();
+                    } else {
+                        acceptVerticalSampleStart(syncDetection.syncStarts, fieldStartSyncIndex);
+                    }
+                    return frame;
                 }()
                 : frameAssembler_.assembleFromSync(
                         video_,
@@ -293,11 +317,18 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
         if (useLockedFieldStart) {
             message << "; field_start_sync=" << fieldStartSyncIndex
                     << "; field_start_candidate=" << fieldCandidateStartSyncIndex
+                    << "; double_image_score=" << frame.doubleImageScore
+                    << "; assembly_path=" << frame.assemblyPath
+                    << "; field_start_line_offset=" << lastFieldStartLineOffset_
                     << "; field_start_locked=" << (fieldStartLocked_ ? "yes" : "no")
                     << "; field_start_relock_count=" << fieldStartRejectCount_
                     << "; v_sample_locked=" << (verticalSampleLock_ ? "yes" : "no")
                     << "; v_relock_count=" << verticalRelockCount_
-                    << "; v_residual_samples=" << lastVEdgeResidualSamples_;
+                    << "; v_residual_samples=" << lastVEdgeResidualSamples_
+                    << "; v_edge_sample=" << lastVEdgeSample_
+                    << "; v_edge_quality=" << lastVEdgeQuality_
+                    << "; field_period_err=" << lastFieldPeriodError_
+                    << "; h_sync_missing_rate=" << lastHSyncMissingRate_;
             if (config_.fastFieldPreview) {
                 message << "; field_stride=" << std::max<std::size_t>(1U, config_.fastPreviewFieldStride);
             }
@@ -319,6 +350,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             video_,
             videoSampleRateHz,
             syncDetection.syncStarts.size());
+    resetVerticalSampleLock();
     timings.assembleMs = elapsedMs(assembleStart, DecodeClock::now());
     timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
     frame.syncIsHigh = syncDetection.syncIsHigh;
@@ -337,6 +369,9 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             << "; sync_score=" << syncDetection.score
             << "; line_stability=" << syncDetection.lineStabilityScore;
     message << "; frame_read_guard_lines=" << frameReadGuardLines()
+            << "; double_image_score=" << frame.doubleImageScore
+            << "; assembly_path=" << frame.assemblyPath
+            << "; h_sync_missing_rate=" << lastHSyncMissingRate_
             << timingDiagnostic(
             timings,
             sourceSamplesRead,
@@ -400,6 +435,160 @@ double AnalogVideoDecoder::frameReadGuardLines() const {
     return fieldStartLocked_ ? 0.0 : 80.0;
 }
 
+void AnalogVideoDecoder::resetVerticalSampleLock() {
+    fieldStartLocked_ = false;
+    fieldStartSyncIndex_ = 0;
+    pendingFieldStartSyncIndex_ = 0;
+    fieldStartRejectCount_ = 0;
+    verticalSampleLock_ = false;
+    lockedVEdgeSample_ = 0.0;
+    pendingVEdgeSample_ = 0.0;
+    lockedActiveStartSample_ = 0.0;
+    pendingActiveStartSample_ = 0.0;
+    lastVEdgeResidualSamples_ = 0.0;
+    lastFieldStartLineOffset_ = 0.0;
+    lastVEdgeSample_ = 0.0;
+    lastVEdgeQuality_ = 0.0;
+    lastFieldPeriodError_ = 0.0;
+    verticalRelockCount_ = 0;
+}
+
+VideoFrame AnalogVideoDecoder::assembleBestFieldPreviewFrame(
+        const std::vector<std::uint8_t>& video,
+        const std::vector<std::size_t>& syncStarts,
+        const std::vector<std::size_t>& frameSyncEdges,
+        std::size_t preferredStartSyncIndex,
+        std::size_t candidateStartSyncIndex,
+        std::uint64_t videoSampleRateHz,
+        std::size_t& selectedStartSyncIndex) {
+    const auto sourceLineCount = static_cast<std::size_t>((config_.timing.visibleLines + 1U) / 2U);
+    const auto maxUsableStart = syncStarts.size() > sourceLineCount
+            ? syncStarts.size() - sourceLineCount
+            : 0U;
+    std::vector<std::size_t> candidates;
+    candidates.reserve(10U);
+    auto addCandidate = [&](long long candidate) {
+        if (candidate < 0) {
+            return;
+        }
+        const auto bounded = std::min<std::size_t>(
+                static_cast<std::size_t>(candidate),
+                maxUsableStart);
+        if (std::find(candidates.begin(), candidates.end(), bounded) == candidates.end()) {
+            candidates.push_back(bounded);
+        }
+    };
+
+    const auto boundedPreferred = std::min(preferredStartSyncIndex, maxUsableStart);
+    const auto boundedCandidate = std::min(candidateStartSyncIndex, maxUsableStart);
+    addCandidate(static_cast<long long>(boundedPreferred));
+    addCandidate(static_cast<long long>(boundedCandidate));
+
+    const auto halfVisibleField = static_cast<long long>(std::max<std::size_t>(1U, sourceLineCount / 2U));
+    const auto quarterVisibleField = static_cast<long long>(std::max<std::size_t>(1U, sourceLineCount / 4U));
+    for (const auto base : {boundedPreferred, boundedCandidate}) {
+        const auto signedBase = static_cast<long long>(base);
+        addCandidate(signedBase - halfVisibleField);
+        addCandidate(signedBase + halfVisibleField);
+        addCandidate(signedBase - quarterVisibleField);
+        addCandidate(signedBase + quarterVisibleField);
+    }
+
+    VideoFrame preferredFrame;
+    bool havePreferred = false;
+    VideoFrame candidateFrame;
+    bool haveCandidate = false;
+    VideoFrame bestFrame;
+    std::size_t bestStart = boundedPreferred;
+    double bestScore = std::numeric_limits<double>::max();
+    for (const auto start : candidates) {
+        auto frame = frameAssembler_.assembleFieldPreviewFromSync(
+                video,
+                syncStarts,
+                frameSyncEdges,
+                start,
+                videoSampleRateHz);
+        if (start == boundedPreferred) {
+            preferredFrame = frame;
+            havePreferred = true;
+        }
+        if (start == boundedCandidate) {
+            candidateFrame = frame;
+            haveCandidate = true;
+        }
+        const double phasePenalty =
+                std::fabs(static_cast<double>(static_cast<long long>(start) -
+                                              static_cast<long long>(boundedPreferred))) *
+                0.06;
+        const double score = frame.doubleImageScore + phasePenalty;
+        if (!bestFrame.valid() || score < bestScore) {
+            bestScore = score;
+            bestStart = start;
+            bestFrame = std::move(frame);
+        }
+    }
+
+    if (!havePreferred) {
+        preferredFrame = frameAssembler_.assembleFieldPreviewFromSync(
+                video,
+                syncStarts,
+                frameSyncEdges,
+                boundedPreferred,
+                videoSampleRateHz);
+    }
+
+    constexpr double kBadDoubleImageScore = 28.0;
+    constexpr double kRequiredImprovement = 4.0;
+    const auto candidateDistance = static_cast<std::size_t>(std::abs(
+            static_cast<long long>(boundedPreferred) -
+            static_cast<long long>(boundedCandidate)));
+    const bool preferredSequentialFarFromCandidate =
+            preferredFrame.assemblyPath == "sequential" && candidateDistance > 12U;
+    if (preferredSequentialFarFromCandidate &&
+        haveCandidate &&
+        candidateFrame.valid() &&
+        candidateFrame.doubleImageScore <= preferredFrame.doubleImageScore + 15.0) {
+        selectedStartSyncIndex = boundedCandidate;
+        candidateFrame.message += "; sequential preferred start rejected for candidate";
+        return candidateFrame;
+    }
+    if ((!preferredSequentialFarFromCandidate && preferredFrame.doubleImageScore < kBadDoubleImageScore) ||
+        preferredFrame.doubleImageScore <= bestFrame.doubleImageScore + kRequiredImprovement) {
+        selectedStartSyncIndex = boundedPreferred;
+        return preferredFrame;
+    }
+
+    selectedStartSyncIndex = bestStart;
+    bestFrame.message += "; double-image rejected preferred start";
+    return bestFrame;
+}
+
+bool AnalogVideoDecoder::isBadSequentialFieldFrame(const VideoFrame& frame) const {
+    constexpr double kRejectSequentialDoubleImageScore = 28.0;
+    return config_.timing.interlaced &&
+           frame.assemblyPath == "sequential" &&
+           frame.doubleImageScore > kRejectSequentialDoubleImageScore;
+}
+
+void AnalogVideoDecoder::acceptVerticalSampleStart(
+        const std::vector<std::size_t>& syncStarts,
+        std::size_t selectedStartSyncIndex) {
+    if (syncStarts.empty()) {
+        return;
+    }
+    const auto bounded = std::min(selectedStartSyncIndex, syncStarts.size() - 1U);
+    const double acceptedSample = videoSampleCursor_ + static_cast<double>(syncStarts[bounded]);
+    lockedActiveStartSample_ = acceptedSample;
+    pendingActiveStartSample_ = acceptedSample;
+    lockedVEdgeSample_ = acceptedSample;
+    pendingVEdgeSample_ = acceptedSample;
+    lastVEdgeSample_ = acceptedSample;
+    fieldStartSyncIndex_ = bounded;
+    pendingFieldStartSyncIndex_ = bounded;
+    fieldStartLocked_ = true;
+    verticalSampleLock_ = true;
+}
+
 std::size_t AnalogVideoDecoder::sampleLockedFieldStartSyncIndex(
         const std::vector<std::size_t>& syncStarts,
         const std::vector<std::size_t>& frameSyncEdges,
@@ -409,6 +598,7 @@ std::size_t AnalogVideoDecoder::sampleLockedFieldStartSyncIndex(
     if (!config_.timing.interlaced || syncStarts.empty() || videoSampleRateHz == 0) {
         return candidateStartSyncIndex;
     }
+    (void)frameSyncEdges;
 
     const auto sourceLineCount = static_cast<std::size_t>((config_.timing.visibleLines + 1U) / 2U);
     const auto maxUsableStart = syncStarts.size() > sourceLineCount
@@ -420,14 +610,14 @@ std::size_t AnalogVideoDecoder::sampleLockedFieldStartSyncIndex(
             static_cast<double>(videoSampleRateHz) / (config_.timing.frameRateHz * 2.0);
     const double frameStartSample = videoSampleCursor_;
     const double frameEndSample = frameStartSample + static_cast<double>(videoSampleCount);
-    const double firstActiveLineOffsetLines = config_.timing.totalLines > 560U ? 22.0 : 19.0;
-    const double firstActiveOffsetSamples = firstActiveLineOffsetLines * static_cast<double>(lineSamples);
-    const double candidateVEdgeSample =
-            frameStartSample + static_cast<double>(syncStarts[boundedCandidate]) - firstActiveOffsetSamples;
+    const double candidateActiveStartSample =
+            frameStartSample + static_cast<double>(syncStarts[boundedCandidate]);
 
     if (!verticalSampleLock_) {
-        lockedVEdgeSample_ = candidateVEdgeSample;
-        pendingVEdgeSample_ = candidateVEdgeSample;
+        lockedActiveStartSample_ = candidateActiveStartSample;
+        pendingActiveStartSample_ = candidateActiveStartSample;
+        lockedVEdgeSample_ = candidateActiveStartSample;
+        pendingVEdgeSample_ = candidateActiveStartSample;
         verticalSampleLock_ = true;
         fieldStartLocked_ = true;
         fieldStartSyncIndex_ = boundedCandidate;
@@ -435,69 +625,73 @@ std::size_t AnalogVideoDecoder::sampleLockedFieldStartSyncIndex(
         fieldStartRejectCount_ = 0;
         verticalRelockCount_ = 0;
         lastVEdgeResidualSamples_ = 0.0;
+        lastFieldStartLineOffset_ = 0.0;
+        lastVEdgeSample_ = lockedActiveStartSample_;
+        lastVEdgeQuality_ = 1.0;
+        lastFieldPeriodError_ = 0.0;
         return fieldStartSyncIndex_;
     }
 
-    double predictedVEdgeSample = lockedVEdgeSample_;
-    while (predictedVEdgeSample + (fieldPeriodSamples * 0.5) < frameStartSample) {
-        predictedVEdgeSample += fieldPeriodSamples;
+    double predictedActiveStartSample = lockedActiveStartSample_;
+    while (predictedActiveStartSample + (fieldPeriodSamples * 0.5) < frameStartSample) {
+        predictedActiveStartSample += fieldPeriodSamples;
     }
-    while (predictedVEdgeSample - (fieldPeriodSamples * 0.5) > frameEndSample) {
-        predictedVEdgeSample -= fieldPeriodSamples;
-    }
-
-    bool hasObservedVEdge = false;
-    double observedVEdgeSample = predictedVEdgeSample;
-    double bestObservedDelta = std::numeric_limits<double>::max();
-    for (const auto edge : frameSyncEdges) {
-        const double edgeSample = frameStartSample + static_cast<double>(edge);
-        const double delta = std::fabs(edgeSample - predictedVEdgeSample);
-        if (delta < bestObservedDelta) {
-            bestObservedDelta = delta;
-            observedVEdgeSample = edgeSample;
-            hasObservedVEdge = true;
-        }
+    while (predictedActiveStartSample - (fieldPeriodSamples * 0.5) > frameEndSample) {
+        predictedActiveStartSample -= fieldPeriodSamples;
     }
 
-    constexpr double kCorrectionGain = 0.25;
-    const double maxCorrectionSamples = 2.0 * static_cast<double>(lineSamples);
-    const double hardRelockResidualSamples = fieldPeriodSamples * 0.5;
+    double observedActiveStartSample = candidateActiveStartSample;
+    while (observedActiveStartSample + (fieldPeriodSamples * 0.5) < predictedActiveStartSample) {
+        observedActiveStartSample += fieldPeriodSamples;
+    }
+    while (observedActiveStartSample - (fieldPeriodSamples * 0.5) > predictedActiveStartSample) {
+        observedActiveStartSample -= fieldPeriodSamples;
+    }
+
     const double stableRelockWindowSamples = 2.0 * static_cast<double>(lineSamples);
-    constexpr std::size_t kHardRelockCount = 5U;
+    double selectedActiveStartSample = predictedActiveStartSample;
 
-    if (hasObservedVEdge) {
-        const double residual = observedVEdgeSample - predictedVEdgeSample;
-        lastVEdgeResidualSamples_ = residual;
-        if (std::fabs(residual) <= hardRelockResidualSamples) {
-            const double correction = std::clamp(
-                    residual * kCorrectionGain,
-                    -maxCorrectionSamples,
-                    maxCorrectionSamples);
-            lockedVEdgeSample_ = predictedVEdgeSample + correction;
-            pendingVEdgeSample_ = observedVEdgeSample;
+    const double residual = observedActiveStartSample - predictedActiveStartSample;
+    lastVEdgeResidualSamples_ = residual;
+    lastFieldStartLineOffset_ = residual / static_cast<double>(lineSamples);
+    lastVEdgeQuality_ = std::clamp(1.0 - (std::fabs(lastFieldStartLineOffset_) / 24.0), 0.0, 1.0);
+    lastFieldPeriodError_ = 0.0;
+    if (std::fabs(lastFieldStartLineOffset_) <= 2.0) {
+        lockedActiveStartSample_ = predictedActiveStartSample;
+        pendingActiveStartSample_ = observedActiveStartSample;
+        selectedActiveStartSample = lockedActiveStartSample_;
+        verticalRelockCount_ = 0;
+    } else if (std::fabs(lastFieldStartLineOffset_) <= 12.0) {
+        const double step = residual > 0.0
+                ? static_cast<double>(lineSamples)
+                : -static_cast<double>(lineSamples);
+        lockedActiveStartSample_ = predictedActiveStartSample + step;
+        pendingActiveStartSample_ = observedActiveStartSample;
+        selectedActiveStartSample = lockedActiveStartSample_;
+        verticalRelockCount_ = 0;
+    } else {
+        const double pendingDelta = std::fabs(observedActiveStartSample - pendingActiveStartSample_);
+        if (pendingDelta <= stableRelockWindowSamples) {
+            ++verticalRelockCount_;
+        } else {
+            pendingActiveStartSample_ = observedActiveStartSample;
+            verticalRelockCount_ = 1;
+        }
+        if (verticalRelockCount_ >= 3U) {
+            lockedActiveStartSample_ = observedActiveStartSample;
+            pendingActiveStartSample_ = observedActiveStartSample;
+            selectedActiveStartSample = observedActiveStartSample;
             verticalRelockCount_ = 0;
         } else {
-            const double pendingDelta = std::fabs(observedVEdgeSample - pendingVEdgeSample_);
-            if (pendingDelta <= stableRelockWindowSamples) {
-                ++verticalRelockCount_;
-            } else {
-                pendingVEdgeSample_ = observedVEdgeSample;
-                verticalRelockCount_ = 1;
-            }
-            if (verticalRelockCount_ >= kHardRelockCount) {
-                lockedVEdgeSample_ = observedVEdgeSample;
-                pendingVEdgeSample_ = observedVEdgeSample;
-                verticalRelockCount_ = 0;
-            } else {
-                lockedVEdgeSample_ = predictedVEdgeSample;
-            }
+            lockedActiveStartSample_ = predictedActiveStartSample;
+            selectedActiveStartSample = predictedActiveStartSample;
         }
-    } else {
-        lockedVEdgeSample_ = predictedVEdgeSample;
-        lastVEdgeResidualSamples_ = 0.0;
     }
+    lockedVEdgeSample_ = lockedActiveStartSample_;
+    lastVEdgeSample_ = lockedActiveStartSample_;
+    pendingVEdgeSample_ = pendingActiveStartSample_;
 
-    double activeStartSample = lockedVEdgeSample_ - frameStartSample + firstActiveOffsetSamples;
+    double activeStartSample = selectedActiveStartSample - frameStartSample;
     while (activeStartSample < 0.0) {
         activeStartSample += fieldPeriodSamples;
     }

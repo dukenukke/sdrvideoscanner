@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 namespace sdr {
@@ -124,6 +125,10 @@ VideoFrame FrameAssembler::assembleFromSync(
         }
     }
 
+    frame.assemblyPath = shouldBobInterlaced()
+            ? "full_sync_bob"
+            : "full_sync";
+    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
             ? "assembled from detected horizontal sync; frame-sync bounded interlaced bob field preview"
             : "assembled from detected horizontal sync";
@@ -198,6 +203,14 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
         copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
     }
 
+    frame.assemblyPath = shouldBobInterlaced()
+            ? (!referenceBobFieldStarts.empty()
+                    ? "pll"
+                    : !fieldSpanSyncIndices.empty()
+                    ? "span"
+                    : "sequential")
+            : "fast_preview";
+    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
             ? (!referenceBobFieldStarts.empty()
                     ? "field preview from frame-sync bounded line PLL; interlaced bob"
@@ -282,6 +295,8 @@ VideoFrame FrameAssembler::assembleRawRaster(
         copyResampledLine(video, lineStart, lineLengthSamples, frame, outputLine);
     }
 
+    frame.assemblyPath = "raw";
+    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
             ? "raw standard-timed raster fallback; interlaced bob field preview"
             : "raw standard-timed raster fallback";
@@ -807,6 +822,129 @@ std::vector<std::size_t> FrameAssembler::lineStartsInSpan(
             starts.end());
     quality = starts.empty() ? 0.0 : static_cast<double>(usedReal) / static_cast<double>(starts.size());
     return starts;
+}
+
+double FrameAssembler::doubleImageScore(const VideoFrame& frame) const {
+    if (!frame.valid() || frame.height < 80U || frame.width < 16U) {
+        return 0.0;
+    }
+
+    const auto height = static_cast<std::size_t>(frame.height);
+    const auto width = static_cast<std::size_t>(frame.width);
+    std::vector<double> rowMeans(height, 0.0);
+    std::vector<double> rowActivities(height, 0.0);
+    for (std::size_t y = 0; y < height; ++y) {
+        const auto* row = frame.pixels.data() + (y * width);
+        double sum = 0.0;
+        double activity = 0.0;
+        for (std::size_t x = 0; x < width; ++x) {
+            sum += static_cast<double>(row[x]);
+            if (x > 0U) {
+                activity += std::fabs(static_cast<double>(row[x]) - static_cast<double>(row[x - 1U]));
+            }
+        }
+        rowMeans[y] = sum / static_cast<double>(width);
+        rowActivities[y] = activity / static_cast<double>(std::max<std::size_t>(1U, width - 1U));
+    }
+
+    const double mean = std::accumulate(rowMeans.begin(), rowMeans.end(), 0.0) /
+            static_cast<double>(rowMeans.size());
+    double variance = 0.0;
+    for (const auto value : rowMeans) {
+        const double centered = value - mean;
+        variance += centered * centered;
+    }
+    variance = std::max(variance, 1.0);
+
+    double bestCorrelation = 0.0;
+    const auto minLag = static_cast<std::size_t>(std::round(static_cast<double>(height) * 0.40));
+    const auto maxLag = static_cast<std::size_t>(std::round(static_cast<double>(height) * 0.60));
+    for (std::size_t lag = minLag; lag <= maxLag && lag + 8U < height; ++lag) {
+        double numerator = 0.0;
+        double leftEnergy = 0.0;
+        double rightEnergy = 0.0;
+        for (std::size_t y = 0; y + lag < height; ++y) {
+            const double left = rowMeans[y] - mean;
+            const double right = rowMeans[y + lag] - mean;
+            numerator += left * right;
+            leftEnergy += left * left;
+            rightEnergy += right * right;
+        }
+        const double denominator = std::sqrt(std::max(1.0, leftEnergy * rightEnergy));
+        bestCorrelation = std::max(bestCorrelation, numerator / denominator);
+    }
+
+    constexpr std::size_t kBand = 8U;
+    const auto mid = height / 2U;
+    const auto beforeStart = mid > (kBand * 2U) ? mid - (kBand * 2U) : 0U;
+    const auto beforeEnd = mid > kBand ? mid - kBand : mid;
+    const auto afterStart = std::min(height, mid + kBand);
+    const auto afterEnd = std::min(height, mid + (kBand * 2U));
+    auto averageRange = [](const std::vector<double>& values, std::size_t start, std::size_t end) {
+        if (start >= end || start >= values.size()) {
+            return 0.0;
+        }
+        end = std::min(end, values.size());
+        return std::accumulate(values.begin() + static_cast<std::ptrdiff_t>(start),
+                               values.begin() + static_cast<std::ptrdiff_t>(end),
+                               0.0) /
+                static_cast<double>(end - start);
+    };
+    const double midMeanJump = std::fabs(
+            averageRange(rowMeans, beforeStart, beforeEnd) -
+            averageRange(rowMeans, afterStart, afterEnd));
+    const double midActivityJump = std::fabs(
+            averageRange(rowActivities, beforeStart, beforeEnd) -
+            averageRange(rowActivities, afterStart, afterEnd));
+
+    auto sortedMeans = rowMeans;
+    std::sort(sortedMeans.begin(), sortedMeans.end());
+    const double lowMean = sortedMeans[sortedMeans.size() / 5U];
+    const double medianMean = sortedMeans[sortedMeans.size() / 2U];
+    const double darkThreshold = lowMean + ((medianMean - lowMean) * 0.35);
+    std::size_t darkToBrightTransitions = 0;
+    std::size_t centralDarkRuns = 0;
+    bool inDarkRun = false;
+    std::size_t darkRunLength = 0;
+    std::size_t runStart = 0;
+    for (std::size_t y = 0; y < rowMeans.size(); ++y) {
+        const auto value = rowMeans[y];
+        const bool dark = value <= darkThreshold;
+        if (dark) {
+            if (!inDarkRun) {
+                runStart = y;
+            }
+            inDarkRun = true;
+            ++darkRunLength;
+            continue;
+        }
+        if (inDarkRun && darkRunLength >= 3U) {
+            ++darkToBrightTransitions;
+            const auto runCenter = runStart + (darkRunLength / 2U);
+            if (runCenter > height / 8U && runCenter < (height * 7U) / 8U) {
+                ++centralDarkRuns;
+            }
+        }
+        inDarkRun = false;
+        darkRunLength = 0;
+    }
+    if (inDarkRun && darkRunLength >= 3U) {
+        const auto runCenter = runStart + (darkRunLength / 2U);
+        if (runCenter > height / 8U && runCenter < (height * 7U) / 8U) {
+            ++centralDarkRuns;
+        }
+    }
+
+    const double correlationScore = std::max(0.0, bestCorrelation - 0.45) * 150.0;
+    const double discontinuityScore = std::clamp((midMeanJump - 12.0) * 1.8, 0.0, 40.0) +
+            std::clamp((midActivityJump - 3.0) * 1.5, 0.0, 25.0);
+    const double transitionScore = darkToBrightTransitions > 1U
+            ? std::min(45.0, static_cast<double>(darkToBrightTransitions - 1U) * 24.0)
+            : 0.0;
+    const double centralBandScore = centralDarkRuns > 0U
+            ? std::min(45.0, static_cast<double>(centralDarkRuns) * 24.0)
+            : 0.0;
+    return std::clamp(correlationScore + discontinuityScore + transitionScore + centralBandScore, 0.0, 100.0);
 }
 
 std::size_t FrameAssembler::findBestSyncNearPrediction(

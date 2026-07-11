@@ -105,6 +105,7 @@ private:
             std::size_t spanEnd,
             std::size_t vbiLines,
             double& quality) const;
+    double doubleImageScore(const VideoFrame& frame) const;
     std::size_t findBestSyncNearPrediction(
             const std::vector<std::size_t>& syncStarts,
             double prediction,

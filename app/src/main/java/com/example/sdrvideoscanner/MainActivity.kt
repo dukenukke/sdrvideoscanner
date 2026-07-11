@@ -246,6 +246,7 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, MENU_PLUTO_WS_FFT, 6, "Pluto WS FFT")
             menu.add(0, MENU_PLAY_AUTO_FILE, 7, "Play AUTO file")
             menu.add(0, MENU_DECODE_AUTO_FILE, 8, "Decode AUTO file")
+            menu.add(0, MENU_ABOUT, 9, "About")
             setOnMenuItemClickListener { item ->
                 runMainMenuAction(item.itemId, item.title.toString())
                 true
@@ -309,7 +310,20 @@ class MainActivity : AppCompatActivity() {
                 activeMode = ActiveMode.FILE_FRAME
                 decodeAndDisplayFrame(path, metadata, VideoStandard.AUTO, frameIndex = 0L)
             }
+            MENU_ABOUT -> showAboutDialog()
         }
+    }
+
+    private fun showAboutDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("About")
+            .setMessage(
+                "SDR Video Scanner\n\n" +
+                    "Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n" +
+                    "Build: ${appBuildLabel()}",
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun setSelectedMenuItem(title: String) {
@@ -472,7 +486,7 @@ class MainActivity : AppCompatActivity() {
         scanController.idle()
         updateSleepBlocker()
         renderSignalTable()
-        binding.sampleText.text = "Scanner stopped.\n\nbuild: ${appBuildLabel()}\nPress Scan to start scanning known channels."
+        binding.sampleText.text = "Scanner stopped.\n\nPress Scan to start scanning known channels."
         updateScannerUi()
     }
 
@@ -513,10 +527,6 @@ class MainActivity : AppCompatActivity() {
                 append(" / ")
                 append(formatFrequency(channel.centerFrequencyHz))
             }
-            append(" | records: ")
-            append(scanController.records().size)
-            append(" | build: ")
-            append(appBuildLabel())
         }
         updateGainDebugOverlay()
     }
@@ -1322,21 +1332,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateChannelStepControls() {
-        val current = selectedPlaybackChannel
-        if (current == null) {
-            binding.channelStepControls.visibility = View.GONE
-            binding.prevChannelButton.isEnabled = false
-            binding.nextChannelButton.isEnabled = false
-            return
-        }
-
-        val previous = adjacentAnalogChannel(current, -1)
-        val next = adjacentAnalogChannel(current, 1)
-        binding.channelStepControls.visibility = View.VISIBLE
-        binding.prevChannelButton.isEnabled = previous != null
-        binding.nextChannelButton.isEnabled = next != null
-        binding.prevChannelButton.text = "- ${previous?.let { formatFrequency(it.centerFrequencyHz) } ?: "--"}"
-        binding.nextChannelButton.text = "+ ${next?.let { formatFrequency(it.centerFrequencyHz) } ?: "--"}"
+        binding.channelStepControls.visibility = View.GONE
+        binding.prevChannelButton.isEnabled = false
+        binding.nextChannelButton.isEnabled = false
     }
 
     private fun adjacentAnalogChannel(channel: KnownChannel, direction: Int): KnownChannel? {
@@ -4669,6 +4667,7 @@ class MainActivity : AppCompatActivity() {
         private const val MENU_DECODE_AUTO_FILE = 7
         private const val MENU_TUNE_FREQUENCY = 8
         private const val MENU_PLAY_PLUTO_USB_CS16 = 9
+        private const val MENU_ABOUT = 10
         private const val ACTION_USB_PERMISSION = "com.example.sdrvideoscanner.USB_PERMISSION"
         private const val PLUTO_USB_VENDOR_ID = 0x0456
         private const val PLUTO_USB_PRODUCT_ID = 0xb673

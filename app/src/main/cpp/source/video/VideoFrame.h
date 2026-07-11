@@ -22,6 +22,8 @@ struct VideoFrame {
     std::uint32_t visibleLines = 0;
     double syncScore = 0.0;
     double lineStabilityScore = 0.0;
+    double doubleImageScore = 0.0;
+    std::string assemblyPath;
     std::string message;
 
     bool valid() const {

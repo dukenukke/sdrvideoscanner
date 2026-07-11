@@ -492,6 +492,8 @@ std::string videoFrameDiagnostic(const sdr::VideoFrame& frame) {
                << "sync_threshold: " << static_cast<int>(frame.syncThreshold) << "\n"
                << "sync_score: " << frame.syncScore << "\n"
                << "line_stability_score: " << frame.lineStabilityScore << "\n"
+               << "double_image_score: " << frame.doubleImageScore << "\n"
+               << "assembly_path: " << optionalText(frame.assemblyPath) << "\n"
                << "frame: " << frame.width << "x" << frame.height << "\n"
                << "decoder: " << frame.message;
     return diagnostic.str();
