@@ -264,8 +264,11 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                                     video_,
                                     syncDetection.syncStarts,
                                     syncDetection.frameSyncEdges,
-                                    videoSampleRateHz);
+                                    videoSampleRateHz,
+                                    fieldStartSyncIndex_,
+                                    fieldStartLocked_);
                     fieldCandidateStartSyncIndex = candidateStartSyncIndex;
+                    const auto hadPreviousFieldLock = fieldStartLocked_;
                     const auto previousLockedStartSyncIndex = fieldStartSyncIndex_;
                     fieldStartSyncIndex = sampleLockedFieldStartSyncIndex(
                             syncDetection.syncStarts,
@@ -284,9 +287,28 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                             selectedStartSyncIndex);
                     fieldStartSyncIndex = selectedStartSyncIndex;
                     if (isBadSequentialFieldFrame(frame)) {
-                        frame.message += "; rejected bad sequential field; lock not committed";
                         fieldStartSyncIndex = previousLockedStartSyncIndex;
-                        resetVerticalSampleLock();
+                        if (hadPreviousFieldLock) {
+                            auto preservedLockFrame = frameAssembler_.assembleFieldPreviewFromSync(
+                                    video_,
+                                    syncDetection.syncStarts,
+                                    syncDetection.frameSyncEdges,
+                                    previousLockedStartSyncIndex,
+                                    videoSampleRateHz);
+                            if (preservedLockFrame.valid() &&
+                                preservedLockFrame.doubleImageScore <= frame.doubleImageScore + 8.0) {
+                                preservedLockFrame.message +=
+                                        "; rejected bad sequential field; displayed preserved lock";
+                                frame = std::move(preservedLockFrame);
+                            } else {
+                                frame.message +=
+                                        "; rejected bad sequential field; previous lock preserved";
+                            }
+                            acceptVerticalSampleStart(syncDetection.syncStarts, fieldStartSyncIndex);
+                        } else {
+                            frame.message += "; rejected bad sequential field; lock not committed";
+                            resetVerticalSampleLock();
+                        }
                     } else {
                         acceptVerticalSampleStart(syncDetection.syncStarts, fieldStartSyncIndex);
                     }
@@ -310,6 +332,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                 << "; decoder_mode=" << (config_.fastFieldPreview ? "fast_field_preview" : "full_sync")
                 << "; syncs=" << syncDetection.syncStarts.size()
                 << "; frame_sync_edges=" << syncDetection.frameSyncEdges.size()
+                << "; frame_sync_quality=" << syncDetection.frameSyncQuality
                 << "; sync_polarity=" << (syncDetection.syncIsHigh ? "high" : "low")
                 << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
                 << "; sync_score=" << syncDetection.score
@@ -364,6 +387,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             << "; decoder_mode=" << (config_.fastFieldPreview ? "fast_field_preview" : "full_sync")
             << "; syncs=" << syncDetection.syncStarts.size()
             << "; frame_sync_edges=" << syncDetection.frameSyncEdges.size()
+            << "; frame_sync_quality=" << syncDetection.frameSyncQuality
             << "; sync_polarity=" << (syncDetection.syncIsHigh ? "high" : "low")
             << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
             << "; sync_score=" << syncDetection.score

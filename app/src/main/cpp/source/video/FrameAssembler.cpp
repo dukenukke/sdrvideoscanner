@@ -12,6 +12,29 @@ namespace {
 
 constexpr std::size_t kMaxLockedFieldPhaseDistanceLines = 6U;
 
+std::size_t fieldPhaseDistanceLines(
+        std::size_t a,
+        std::size_t b,
+        std::size_t fieldLineCount) {
+    auto best = static_cast<std::size_t>(std::abs(
+            static_cast<long long>(a) - static_cast<long long>(b)));
+    if (fieldLineCount > 1U) {
+        best = std::min<std::size_t>(
+                best,
+                static_cast<std::size_t>(std::abs(
+                        static_cast<long long>(a + fieldLineCount) -
+                        static_cast<long long>(b))));
+        if (a >= fieldLineCount) {
+            best = std::min<std::size_t>(
+                    best,
+                    static_cast<std::size_t>(std::abs(
+                            static_cast<long long>(a - fieldLineCount) -
+                            static_cast<long long>(b))));
+        }
+    }
+    return best;
+}
+
 }  // namespace
 
 const char* videoStandardName(VideoStandard standard) {
@@ -225,7 +248,9 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
         const std::vector<std::uint8_t>& video,
         const std::vector<std::size_t>& syncStarts,
         const std::vector<std::size_t>& frameSyncEdges,
-        std::uint64_t sampleRateHz) const {
+        std::uint64_t sampleRateHz,
+        std::size_t lockedStartSyncIndex,
+        bool hasLockedStart) const {
     if (!shouldBobInterlaced()) {
         return 0;
     }
@@ -233,13 +258,22 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
     const auto lineLengthSamples = samplesPerLine(sampleRateHz);
     const auto activeOffset = activeStartOffset(sampleRateHz);
     const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
+    const auto sourceLineCount = interlacedSourceLineCount();
+    const auto maxUsableStart = syncStarts.size() > sourceLineCount
+            ? syncStarts.size() - sourceLineCount
+            : 0U;
+    const auto boundedLockedStart = std::min(lockedStartSyncIndex, maxUsableStart);
+    const auto fieldLineCount = static_cast<std::size_t>(
+            std::max(1.0, std::round(timing_.lineRateHz / (timing_.frameRateHz * 2.0))));
+
+    const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
             video,
             syncStarts,
+            frameSyncEdges,
             activeOffset,
             samplesPerActiveLine);
-    if (activeWindowStart != static_cast<std::size_t>(-1)) {
-        return activeWindowStart;
+    if (frameSyncStart != static_cast<std::size_t>(-1)) {
+        return frameSyncStart;
     }
 
     const auto verticalBlankingStart = chooseInterlacedStartFromVerticalBlanking(
@@ -251,14 +285,17 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
         return verticalBlankingStart;
     }
 
-    const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
+    if (hasLockedStart) {
+        return boundedLockedStart;
+    }
+
+    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
             video,
             syncStarts,
-            frameSyncEdges,
             activeOffset,
             samplesPerActiveLine);
-    if (frameSyncStart != static_cast<std::size_t>(-1)) {
-        return frameSyncStart;
+    if (activeWindowStart != static_cast<std::size_t>(-1)) {
+        return activeWindowStart;
     }
 
     return chooseInterlacedStartSyncIndex(
@@ -431,6 +468,8 @@ std::size_t FrameAssembler::chooseInterlacedStartFromFrameSync(
     const auto maxUsableStart = syncStarts.size() > sourceLineCount
             ? syncStarts.size() - sourceLineCount
             : 0U;
+    const auto fieldLineCount = static_cast<std::size_t>(
+            std::max(1.0, std::round(timing_.lineRateHz / (timing_.frameRateHz * 2.0))));
     auto bestStart = static_cast<std::size_t>(-1);
     double bestScore = -1.0;
     for (const auto frameEdge : frameSyncEdges) {
@@ -448,6 +487,11 @@ std::size_t FrameAssembler::chooseInterlacedStartFromFrameSync(
                 samplesPerActiveLine,
                 maxUsableStart);
         if (candidate == static_cast<std::size_t>(-1)) {
+            continue;
+        }
+        if (bestStart != static_cast<std::size_t>(-1) &&
+            fieldLineCount > 1U &&
+            fieldPhaseDistanceLines(candidate, bestStart, fieldLineCount) > 8U) {
             continue;
         }
 
@@ -979,16 +1023,59 @@ std::size_t FrameAssembler::chooseActiveStartNearFieldSync(
         return static_cast<std::size_t>(-1);
     }
 
-    const auto nominalSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 22U : 19U);
-    const auto minSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 14U : 8U);
-    const auto maxSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 36U : 32U);
-    const auto searchStart = std::min(edgeSyncIndex + minSkip, maxUsableStart);
-    const auto searchEnd = std::min(edgeSyncIndex + maxSkip, maxUsableStart);
+    constexpr std::size_t kMinSkip = 8U;
+    constexpr std::size_t kMaxSkip = 40U;
+    constexpr std::size_t kBlankingProbeLines = 6U;
+    const auto searchStart = std::min(edgeSyncIndex + kMinSkip, maxUsableStart);
+    const auto searchEnd = std::min(edgeSyncIndex + kMaxSkip, maxUsableStart);
     if (searchStart > searchEnd) {
         return static_cast<std::size_t>(-1);
     }
 
-    const auto nominalStart = std::min(edgeSyncIndex + nominalSkip, maxUsableStart);
+    std::vector<double> searchActivities;
+    searchActivities.reserve(searchEnd - searchStart + 1U);
+    double blankingActivitySum = 0.0;
+    std::size_t blankingActivityCount = 0;
+    const auto blankingStart = std::min(edgeSyncIndex + 2U, maxUsableStart);
+    const auto blankingEnd = std::min(edgeSyncIndex + 2U + kBlankingProbeLines, maxUsableStart);
+    for (std::size_t probe = blankingStart; probe <= blankingEnd && probe < syncStarts.size(); ++probe) {
+        const auto lineStart = syncStarts[probe] + activeOffset;
+        blankingActivitySum += lineActivity(video, lineStart, samplesPerActiveLine);
+        ++blankingActivityCount;
+    }
+
+    for (std::size_t candidate = searchStart; candidate <= searchEnd; ++candidate) {
+        const auto lineStart = syncStarts[candidate] + activeOffset;
+        searchActivities.push_back(lineActivity(video, lineStart, samplesPerActiveLine));
+    }
+    if (searchActivities.empty()) {
+        return static_cast<std::size_t>(-1);
+    }
+    auto sortedActivities = searchActivities;
+    std::sort(sortedActivities.begin(), sortedActivities.end());
+    const double lowActivity = sortedActivities[sortedActivities.size() / 5U];
+    const double medianActivity = sortedActivities[sortedActivities.size() / 2U];
+    const double blankingActivity = blankingActivityCount == 0
+            ? lowActivity
+            : blankingActivitySum / static_cast<double>(blankingActivityCount);
+    const double activeThreshold = std::max(
+            blankingActivity * 2.4,
+            lowActivity + ((medianActivity - lowActivity) * 0.35));
+
+    for (std::size_t candidate = searchStart; candidate + 2U <= searchEnd; ++candidate) {
+        std::size_t activeLines = 0;
+        for (std::size_t offset = 0; offset < 3U; ++offset) {
+            const auto lineStart = syncStarts[candidate + offset] + activeOffset;
+            if (lineActivity(video, lineStart, samplesPerActiveLine) >= activeThreshold) {
+                ++activeLines;
+            }
+        }
+        if (activeLines >= 2U) {
+            return candidate;
+        }
+    }
+
+    const auto nominalStart = std::min(edgeSyncIndex + (timing_.totalLines > 560 ? 22U : 19U), maxUsableStart);
     std::size_t bestStart = static_cast<std::size_t>(-1);
     double bestScore = -1.0;
     for (std::size_t candidate = searchStart; candidate <= searchEnd; ++candidate) {

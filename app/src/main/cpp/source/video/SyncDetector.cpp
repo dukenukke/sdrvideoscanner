@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace sdr {
 namespace {
@@ -141,136 +142,249 @@ std::vector<float> movingAverageFloat(
     return smoothed;
 }
 
-double meanFloat(const std::vector<float>& values) {
-    if (values.empty()) {
-        return 0.0;
-    }
+struct SyncPulseRun {
+    std::size_t start = 0;
+    std::size_t end = 0;
+};
 
-    double sum = 0.0;
-    for (const auto value : values) {
-        sum += value;
-    }
-    return sum / static_cast<double>(values.size());
-}
+struct FrameSyncCandidate {
+    std::size_t sample = 0;
+    double score = 0.0;
+};
 
-double stddevFloat(const std::vector<float>& values, double mean) {
-    if (values.empty()) {
-        return 0.0;
-    }
-
-    double sumSquares = 0.0;
-    for (const auto value : values) {
-        const double delta = static_cast<double>(value) - mean;
-        sumSquares += delta * delta;
-    }
-    return std::sqrt(sumSquares / static_cast<double>(values.size()));
-}
-
-double meanAndStddevFloat(const std::vector<float>& values, double& mean) {
-    if (values.empty()) {
-        mean = 0.0;
-        return 0.0;
-    }
-
-    double sum = 0.0;
-    double sumSquares = 0.0;
-    for (const auto value : values) {
-        const double sample = static_cast<double>(value);
-        sum += sample;
-        sumSquares += sample * sample;
-    }
-    mean = sum / static_cast<double>(values.size());
-    const double variance = (sumSquares / static_cast<double>(values.size())) - (mean * mean);
-    return std::sqrt(std::max(0.0, variance));
-}
-
-std::vector<std::size_t> detectFrameSyncEdges(
-        const std::vector<std::uint8_t>& video,
-        std::uint64_t sampleRateHz) {
+struct FrameSyncDetection {
     std::vector<std::size_t> edges;
-    if (video.size() < samplesForSeconds(sampleRateHz, 0.03) || sampleRateHz == 0) {
-        return edges;
+    double quality = 0.0;
+};
+
+std::vector<std::uint8_t> normalizedSyncLowVideo(
+        const std::vector<std::uint8_t>& smoothed,
+        bool syncIsHigh) {
+    std::vector<std::uint8_t> normalized(smoothed.size());
+    for (std::size_t index = 0; index < smoothed.size(); ++index) {
+        normalized[index] = syncIsHigh
+                ? static_cast<std::uint8_t>(255U - smoothed[index])
+                : smoothed[index];
     }
+    return normalized;
+}
 
-    std::vector<std::uint8_t> byteScratch;
-    auto centered = centeredFloatVideo(video, byteScratch);
-    auto smooth = movingAverageFloat(centered, sampleRateHz, 0.00035);
-    auto smoothScratch = smooth;
-    float lowPercentile = 0.0F;
-    float highPercentile = 0.0F;
-    percentilePairInPlace(smoothScratch, 0.01, 0.99, lowPercentile, highPercentile);
-    auto medianScratch = smooth;
-    const float median = percentileFloat(std::move(medianScratch), 0.50);
-    const float negScore = std::fabs(lowPercentile - median);
-    const float posScore = std::fabs(highPercentile - median);
-
-    std::vector<float> sync(smooth.size());
-    for (std::size_t index = 0; index < smooth.size(); ++index) {
-        sync[index] = (negScore >= posScore) ? -smooth[index] : smooth[index];
-    }
-
-    auto syncScratch = sync;
-    const float syncMedian = percentileFloat(std::move(syncScratch), 0.50);
-    for (auto& value : sync) {
-        value -= syncMedian;
-    }
-
-    double syncMean = 0.0;
-    const auto sigma = meanAndStddevFloat(sync, syncMean) + 1.0e-12;
-    for (auto& value : sync) {
-        value = static_cast<float>(static_cast<double>(value) / sigma);
-    }
-
-    const auto minDistance = samplesForSeconds(sampleRateHz, 0.012);
-    std::size_t lastKept = 0;
-    bool hasLast = false;
-    std::size_t index = 1;
-    while (index + 1U < sync.size()) {
-        if (sync[index] < 0.8F) {
+std::vector<SyncPulseRun> detectPulseRuns(
+        const std::vector<std::uint8_t>& smoothed,
+        std::uint8_t threshold,
+        bool highPulse,
+        std::size_t minRunSamples) {
+    std::vector<SyncPulseRun> runs;
+    std::size_t index = 0;
+    while (index < smoothed.size()) {
+        const bool active = highPulse ? smoothed[index] >= threshold : smoothed[index] <= threshold;
+        if (!active) {
             ++index;
             continue;
         }
 
         const auto runStart = index;
-        auto peakIndex = index;
-        auto peakValue = sync[index];
-        while (index + 1U < sync.size() && sync[index] >= 0.8F) {
-            if (sync[index] > peakValue) {
-                peakValue = sync[index];
-                peakIndex = index;
+        while (index < smoothed.size()) {
+            const bool stillActive = highPulse ? smoothed[index] >= threshold : smoothed[index] <= threshold;
+            if (!stillActive) {
+                break;
             }
             ++index;
         }
+        if (index - runStart >= minRunSamples) {
+            runs.push_back({runStart, index});
+        }
+    }
+    return runs;
+}
 
-        if (peakValue < 1.2F) {
+double sampleMean(
+        const std::vector<std::uint8_t>& video,
+        std::size_t start,
+        std::size_t length) {
+    if (start >= video.size() || length == 0) {
+        return 255.0;
+    }
+    const auto available = std::min(length, video.size() - start);
+    if (available == 0) {
+        return 255.0;
+    }
+    constexpr std::size_t kSamples = 64U;
+    const auto sampleCount = std::min(kSamples, available);
+    double sum = 0.0;
+    for (std::size_t index = 0; index < sampleCount; ++index) {
+        const auto offset = (static_cast<std::uint64_t>(index) * available) / sampleCount;
+        sum += static_cast<double>(video[start + static_cast<std::size_t>(offset)]);
+    }
+    return sum / static_cast<double>(sampleCount);
+}
+
+double sampleActivity(
+        const std::vector<std::uint8_t>& video,
+        std::size_t start,
+        std::size_t length) {
+    if (start >= video.size() || length == 0) {
+        return 0.0;
+    }
+    const auto available = std::min(length, video.size() - start);
+    if (available < 2U) {
+        return 0.0;
+    }
+    constexpr std::size_t kSamples = 64U;
+    const auto sampleCount = std::min(kSamples, available);
+    double sum = 0.0;
+    double sumSquares = 0.0;
+    for (std::size_t index = 0; index < sampleCount; ++index) {
+        const auto offset = (static_cast<std::uint64_t>(index) * available) / sampleCount;
+        const double value = static_cast<double>(video[start + static_cast<std::size_t>(offset)]);
+        sum += value;
+        sumSquares += value * value;
+    }
+    const double mean = sum / static_cast<double>(sampleCount);
+    return (sumSquares / static_cast<double>(sampleCount)) - (mean * mean);
+}
+
+double blankingScoreAfter(
+        const std::vector<std::uint8_t>& normalized,
+        std::size_t edgeSample,
+        std::size_t lineSamples) {
+    if (lineSamples == 0 || edgeSample >= normalized.size()) {
+        return 0.0;
+    }
+
+    constexpr std::size_t kFirstProbeLine = 3U;
+    constexpr std::size_t kProbeLines = 12U;
+    const auto activeOffset = static_cast<std::size_t>(std::round(static_cast<double>(lineSamples) * 0.18));
+    const auto activeLength = static_cast<std::size_t>(std::round(static_cast<double>(lineSamples) * 0.60));
+    double darknessSum = 0.0;
+    double flatnessSum = 0.0;
+    std::size_t used = 0;
+    for (std::size_t line = 0; line < kProbeLines; ++line) {
+        const auto start = edgeSample + ((kFirstProbeLine + line) * lineSamples) + activeOffset;
+        if (start >= normalized.size()) {
+            break;
+        }
+        const double mean = sampleMean(normalized, start, activeLength);
+        const double activity = sampleActivity(normalized, start, activeLength);
+        darknessSum += std::clamp((150.0 - mean) / 120.0, 0.0, 1.0);
+        flatnessSum += 1.0 / (1.0 + (activity / 220.0));
+        ++used;
+    }
+
+    if (used < 4U) {
+        return 0.0;
+    }
+    return ((darknessSum / static_cast<double>(used)) * 0.65) +
+           ((flatnessSum / static_cast<double>(used)) * 0.35);
+}
+
+double intervalScore(
+        const std::vector<FrameSyncCandidate>& candidates,
+        std::size_t candidateIndex,
+        double fieldPeriodSamples) {
+    if (candidates.size() < 2U || fieldPeriodSamples <= 1.0) {
+        return 0.55;
+    }
+
+    double best = 0.0;
+    const double minPeriod = fieldPeriodSamples * 0.85;
+    const double maxPeriod = fieldPeriodSamples * 1.15;
+    const double tolerance = fieldPeriodSamples * 0.15;
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (index == candidateIndex) {
             continue;
         }
-        if (hasLast && peakIndex < lastKept + minDistance) {
-            if (!edges.empty() && sync[lastKept] < peakValue) {
-                edges.pop_back();
-            } else {
-                continue;
+        const double distance = std::fabs(
+                static_cast<double>(candidates[index].sample) -
+                static_cast<double>(candidates[candidateIndex].sample));
+        if (distance < minPeriod || distance > maxPeriod) {
+            continue;
+        }
+        best = std::max(best, 1.0 - (std::fabs(distance - fieldPeriodSamples) / tolerance));
+    }
+    return best;
+}
+
+FrameSyncDetection detectFrameSyncEdges(
+        const std::vector<std::uint8_t>& video,
+        std::uint64_t sampleRateHz,
+        std::size_t lineSamples,
+        std::size_t expectedLineCount,
+        bool syncIsHigh,
+        std::uint8_t threshold) {
+    FrameSyncDetection detection;
+    if (video.size() < samplesForSeconds(sampleRateHz, 0.018) ||
+        sampleRateHz == 0 ||
+        lineSamples == 0 ||
+        expectedLineCount == 0) {
+        return detection;
+    }
+
+    const auto smoothed = smoothVideo(video, sampleRateHz, 0.75e-6);
+    const auto normalized = normalizedSyncLowVideo(smoothed, syncIsHigh);
+    const auto minRunSamples = samplesForSeconds(sampleRateHz, 1.7e-6);
+    const auto longRunSamples = samplesForSeconds(sampleRateHz, 13.0e-6);
+    const auto clusterWindowSamples = static_cast<std::size_t>(
+            std::max(1.0, std::round(static_cast<double>(lineSamples) * 3.2)));
+    const double fieldPeriodSamples =
+            static_cast<double>(lineSamples) * (static_cast<double>(expectedLineCount) / 2.0);
+    auto runs = detectPulseRuns(smoothed, threshold, syncIsHigh, minRunSamples);
+    if (runs.empty()) {
+        return detection;
+    }
+
+    std::vector<FrameSyncCandidate> candidates;
+    std::size_t index = 0;
+    while (index < runs.size()) {
+        const auto clusterStart = runs[index].start;
+        auto clusterEnd = runs[index].end;
+        std::size_t longRuns = 0;
+        std::size_t totalSyncSamples = 0;
+        std::size_t runCount = 0;
+        while (index < runs.size() && runs[index].start <= clusterStart + clusterWindowSamples) {
+            const auto length = runs[index].end - runs[index].start;
+            if (length >= longRunSamples) {
+                ++longRuns;
             }
-        }
-
-        const float threshold = peakValue * 0.45F;
-        auto edge = peakIndex;
-        const auto limit = edge > samplesForSeconds(sampleRateHz, 0.006)
-                ? edge - samplesForSeconds(sampleRateHz, 0.006)
-                : 0U;
-        while (edge > 0 && edge > limit && sync[edge] > threshold) {
-            --edge;
-        }
-        edges.push_back(edge);
-        lastKept = peakIndex;
-        hasLast = true;
-
-        if (index == runStart) {
+            totalSyncSamples += length;
+            clusterEnd = std::max(clusterEnd, runs[index].end);
+            ++runCount;
             ++index;
+        }
+
+        if (runCount < 2U && longRuns == 0U) {
+            continue;
+        }
+
+        const double longRunScore = std::min(1.0, static_cast<double>(longRuns) / 3.0);
+        const double density = static_cast<double>(totalSyncSamples) /
+                static_cast<double>(std::max<std::size_t>(1U, clusterEnd - clusterStart));
+        const double densityScore = std::clamp((density - 0.04) / 0.18, 0.0, 1.0);
+        const double blankingScore = blankingScoreAfter(normalized, clusterStart, lineSamples);
+        const double score = (longRunScore * 0.42) + (densityScore * 0.23) + (blankingScore * 0.35);
+        if (score >= 0.28) {
+            candidates.push_back({clusterStart, score});
         }
     }
 
-    return edges;
+    for (std::size_t candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+        const double periodScore = intervalScore(candidates, candidateIndex, fieldPeriodSamples);
+        const double combinedScore = (candidates[candidateIndex].score * 0.72) + (periodScore * 0.28);
+        if (combinedScore < 0.34) {
+            continue;
+        }
+        if (!detection.edges.empty() &&
+            candidates[candidateIndex].sample < detection.edges.back() + (lineSamples * 8U)) {
+            if (combinedScore > detection.quality) {
+                detection.edges.back() = candidates[candidateIndex].sample;
+            }
+        } else {
+            detection.edges.push_back(candidates[candidateIndex].sample);
+        }
+        detection.quality = std::max(detection.quality, combinedScore);
+    }
+
+    return detection;
 }
 
 std::vector<std::size_t> detectRuns(
@@ -410,7 +524,15 @@ SyncDetectionResult detectHorizontalSyncsInternal(
 
     auto result = highResult.score > lowResult.score ? highResult : lowResult;
     if (detectFrameSync) {
-        result.frameSyncEdges = detectFrameSyncEdges(video, sampleRateHz);
+        const auto frameSync = detectFrameSyncEdges(
+                video,
+                sampleRateHz,
+                lineSamples,
+                expectedLineCount,
+                result.syncIsHigh,
+                result.threshold);
+        result.frameSyncEdges = frameSync.edges;
+        result.frameSyncQuality = frameSync.quality;
     }
     return result;
 }
