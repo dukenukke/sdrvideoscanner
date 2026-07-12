@@ -52,6 +52,12 @@ public:
             std::size_t lockedStartSyncIndex,
             bool hasLockedStart) const;
 
+    std::size_t chooseFieldPreviewStartFromFrameSyncEdge(
+            const std::vector<std::uint8_t>& video,
+            const std::vector<std::size_t>& syncStarts,
+            std::size_t frameSyncEdge,
+            std::uint64_t sampleRateHz) const;
+
     VideoFrame assembleRawRaster(
             const std::vector<std::uint8_t>& video,
             std::uint64_t sampleRateHz,

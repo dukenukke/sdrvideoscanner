@@ -85,6 +85,66 @@ std::string timingDiagnostic(
     return message.str();
 }
 
+std::string edgeListDiagnostic(const std::vector<std::size_t>& edges) {
+    std::ostringstream message;
+    for (std::size_t index = 0; index < edges.size(); ++index) {
+        if (index > 0U) {
+            message << ",";
+        }
+        message << edges[index];
+    }
+    return message.str();
+}
+
+void skippedEdges(
+        const std::vector<std::size_t>& detectedEdges,
+        const std::vector<std::size_t>& acceptedEdges,
+        std::vector<std::size_t>& skipped) {
+    skipped.clear();
+    skipped.reserve(detectedEdges.size());
+    for (const auto edge : detectedEdges) {
+        const auto accepted = std::find(
+                acceptedEdges.begin(),
+                acceptedEdges.end(),
+                edge) != acceptedEdges.end();
+        if (!accepted) {
+            skipped.push_back(edge);
+        }
+    }
+}
+
+void absoluteEdgesToTimelineOffsets(
+        const std::vector<double>& absoluteEdges,
+        double firstSample,
+        std::size_t sampleCount,
+        std::vector<std::size_t>& offsets) {
+    offsets.clear();
+    if (sampleCount == 0) {
+        return;
+    }
+    offsets.reserve(absoluteEdges.size());
+    const double lastSample = firstSample + static_cast<double>(sampleCount);
+    for (const auto absoluteEdge : absoluteEdges) {
+        if (absoluteEdge < firstSample || absoluteEdge > lastSample) {
+            continue;
+        }
+        offsets.push_back(static_cast<std::size_t>(
+                std::round(absoluteEdge - firstSample)));
+    }
+}
+
+bool isNearAnyEdge(
+        double absoluteSample,
+        const std::vector<double>& absoluteEdges,
+        double toleranceSamples) {
+    for (const auto edge : absoluteEdges) {
+        if (std::fabs(edge - absoluteSample) <= toleranceSamples) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void subtractMean(std::vector<float>& samples) {
     if (samples.empty()) {
         return;
@@ -267,6 +327,28 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     maxSyncs);
     timings.syncMs = elapsedMs(syncStart, DecodeClock::now());
 
+    appendSyncHistory(syncVideo_, videoSampleRateHz);
+    appendVerticalEdgeCandidates(
+            syncDetection.frameSyncEdges,
+            videoSampleRateHz,
+            syncDetection.frameSyncQuality);
+    strictSelectedFrameSyncEdges_.clear();
+    strictFrameSyncEdges(
+            syncDetection.frameSyncEdges,
+            videoSampleRateHz,
+            strictSelectedFrameSyncEdges_);
+    const bool strictTrackingActive = strictVEdgeLocked_ || strictVEdgeMissCount_ > 0U;
+    const auto& frameSyncEdgesForAssembly = !strictSelectedFrameSyncEdges_.empty()
+            ? strictSelectedFrameSyncEdges_
+            : strictTrackingActive
+            ? emptyFrameSyncEdges_
+            : syncDetection.frameSyncEdges;
+    skippedEdges(
+            syncDetection.frameSyncEdges,
+            strictSelectedFrameSyncEdges_,
+            skippedFrameSyncEdges_);
+    updateTimelineEdgeDiagnostics(videoSampleRateHz);
+
     if (syncDetection.syncIsHigh) {
         for (auto& sample : video_) {
             sample = static_cast<std::uint8_t>(255U - sample);
@@ -298,20 +380,30 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
         const auto assembleStart = DecodeClock::now();
         auto frame = useLockedFieldStart
                 ? [&]() {
-                    const auto candidateStartSyncIndex =
-                            frameAssembler_.chooseFieldPreviewStartSyncIndex(
+                    auto candidateStartSyncIndex = static_cast<std::size_t>(-1);
+                    if (!strictSelectedFrameSyncEdges_.empty()) {
+                        candidateStartSyncIndex =
+                                frameAssembler_.chooseFieldPreviewStartFromFrameSyncEdge(
+                                        video_,
+                                        syncDetection.syncStarts,
+                                        strictSelectedFrameSyncEdges_.front(),
+                                        videoSampleRateHz);
+                    }
+                    if (candidateStartSyncIndex == static_cast<std::size_t>(-1)) {
+                        candidateStartSyncIndex = frameAssembler_.chooseFieldPreviewStartSyncIndex(
                                     video_,
                                     syncDetection.syncStarts,
-                                    syncDetection.frameSyncEdges,
+                                    frameSyncEdgesForAssembly,
                                     videoSampleRateHz,
                                     fieldStartSyncIndex_,
                                     fieldStartLocked_);
+                    }
                     fieldCandidateStartSyncIndex = candidateStartSyncIndex;
                     const auto hadPreviousFieldLock = fieldStartLocked_;
                     const auto previousLockedStartSyncIndex = fieldStartSyncIndex_;
                     fieldStartSyncIndex = sampleLockedFieldStartSyncIndex(
                             syncDetection.syncStarts,
-                            syncDetection.frameSyncEdges,
+                            frameSyncEdgesForAssembly,
                             candidateStartSyncIndex,
                             videoSampleRateHz,
                             video_.size());
@@ -319,7 +411,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     auto frame = assembleBestFieldPreviewFrame(
                             video_,
                             syncDetection.syncStarts,
-                            syncDetection.frameSyncEdges,
+                            frameSyncEdgesForAssembly,
                             fieldStartSyncIndex,
                             candidateStartSyncIndex,
                             videoSampleRateHz,
@@ -331,7 +423,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                             auto preservedLockFrame = frameAssembler_.assembleFieldPreviewFromSync(
                                     video_,
                                     syncDetection.syncStarts,
-                                    syncDetection.frameSyncEdges,
+                                    frameSyncEdgesForAssembly,
                                     previousLockedStartSyncIndex,
                                     videoSampleRateHz);
                             if (preservedLockFrame.valid() &&
@@ -357,7 +449,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                 : frameAssembler_.assembleFromSync(
                         video_,
                         syncDetection.syncStarts,
-                        syncDetection.frameSyncEdges,
+                        frameSyncEdgesForAssembly,
                         videoSampleRateHz);
         timings.assembleMs = elapsedMs(assembleStart, DecodeClock::now());
         timings.totalMs = elapsedMs(decodeStart, DecodeClock::now());
@@ -372,6 +464,10 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                 << "; decoder_mode=" << (config_.fastFieldPreview ? "fast_field_preview" : "full_sync")
                 << "; syncs=" << syncDetection.syncStarts.size()
                 << "; frame_sync_edges=" << syncDetection.frameSyncEdges.size()
+                << "; strict_frame_sync_edges=" << strictSelectedFrameSyncEdges_.size()
+                << "; timeline_samples=" << syncHistorySizeSamples_
+                << "; timeline_strict_edges=" << edgeListDiagnostic(timelineStrictEdges_)
+                << "; timeline_skipped_edges=" << edgeListDiagnostic(timelineSkippedEdges_)
                 << "; frame_sync_quality=" << syncDetection.frameSyncQuality
                 << "; sync_polarity=" << (syncDetection.syncIsHigh ? "high" : "low")
                 << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
@@ -386,6 +482,12 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                     << "; field_start_locked=" << (fieldStartLocked_ ? "yes" : "no")
                     << "; field_start_relock_count=" << fieldStartRejectCount_
                     << "; v_sample_locked=" << (verticalSampleLock_ ? "yes" : "no")
+                    << "; strict_v_locked=" << (strictVEdgeLocked_ ? "yes" : "no")
+                    << "; strict_v_chain=" << lastStrictVEdgeChainLength_
+                    << "; strict_v_misses=" << strictVEdgeMissCount_
+                    << "; strict_v_edge_sample=" << lastStrictVEdgeSample_
+                    << "; strict_v_interval_err=" << lastStrictVEdgeIntervalError_
+                    << "; sync_history_samples=" << syncHistorySizeSamples_
                     << "; v_relock_count=" << verticalRelockCount_
                     << "; v_residual_samples=" << lastVEdgeResidualSamples_
                     << "; v_edge_sample=" << lastVEdgeSample_
@@ -428,6 +530,10 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             << "; decoder_mode=" << (config_.fastFieldPreview ? "fast_field_preview" : "full_sync")
             << "; syncs=" << syncDetection.syncStarts.size()
             << "; frame_sync_edges=" << syncDetection.frameSyncEdges.size()
+            << "; strict_frame_sync_edges=" << strictSelectedFrameSyncEdges_.size()
+            << "; timeline_samples=" << syncHistorySizeSamples_
+            << "; timeline_strict_edges=" << edgeListDiagnostic(timelineStrictEdges_)
+            << "; timeline_skipped_edges=" << edgeListDiagnostic(timelineSkippedEdges_)
             << "; frame_sync_quality=" << syncDetection.frameSyncQuality
             << "; sync_polarity=" << (syncDetection.syncIsHigh ? "high" : "low")
             << "; sync_threshold=" << static_cast<int>(syncDetection.threshold)
@@ -517,6 +623,357 @@ void AnalogVideoDecoder::resetVerticalSampleLock() {
     lastVEdgeQuality_ = 0.0;
     lastFieldPeriodError_ = 0.0;
     verticalRelockCount_ = 0;
+    resetVerticalEdgeHistory();
+}
+
+void AnalogVideoDecoder::resetVerticalEdgeHistory() {
+    verticalEdgeHistory_.clear();
+    strictVEdgeLocked_ = false;
+    strictLockedVEdgeSample_ = 0.0;
+    lastStrictVEdgeSample_ = 0.0;
+    lastStrictVEdgeIntervalError_ = 0.0;
+    lastStrictVEdgeChainLength_ = 0;
+    strictVEdgeMissCount_ = 0;
+    strictTimelineEdgeSamples_.clear();
+    timelineStrictEdges_.clear();
+    timelineSkippedEdges_.clear();
+}
+
+void AnalogVideoDecoder::updateTimelineEdgeDiagnostics(std::uint64_t videoSampleRateHz) {
+    absoluteEdgesToTimelineOffsets(
+            strictTimelineEdgeSamples_,
+            syncHistoryFirstSample_,
+            syncHistorySizeSamples_,
+            timelineStrictEdges_);
+
+    timelineSkippedEdges_.clear();
+    if (syncHistorySizeSamples_ == 0) {
+        return;
+    }
+
+    const auto lineSamples = samplesPerLineAtRate(videoSampleRateHz, config_.timing.lineRateHz);
+    const double toleranceSamples = std::max(1.0, static_cast<double>(lineSamples));
+    const double lastSample = syncHistoryFirstSample_ + static_cast<double>(syncHistorySizeSamples_);
+    timelineSkippedEdges_.reserve(verticalEdgeHistory_.size());
+    for (const auto& candidate : verticalEdgeHistory_) {
+        if (candidate.absoluteSample < syncHistoryFirstSample_ ||
+            candidate.absoluteSample > lastSample ||
+            isNearAnyEdge(candidate.absoluteSample, strictTimelineEdgeSamples_, toleranceSamples)) {
+            continue;
+        }
+        timelineSkippedEdges_.push_back(static_cast<std::size_t>(
+                std::round(candidate.absoluteSample - syncHistoryFirstSample_)));
+    }
+}
+
+void AnalogVideoDecoder::appendSyncHistory(
+        const std::vector<std::uint8_t>& syncVideo,
+        std::uint64_t videoSampleRateHz) {
+    if (syncVideo.empty() || videoSampleRateHz == 0 || config_.timing.frameRateHz <= 0.0) {
+        return;
+    }
+
+    constexpr double kHistoryFrames = 4.0;
+    const auto wantedCapacity = static_cast<std::size_t>(
+            std::max<double>(
+                    static_cast<double>(syncVideo.size()),
+                    std::round((static_cast<double>(videoSampleRateHz) *
+                                kHistoryFrames) /
+                               config_.timing.frameRateHz)));
+    if (wantedCapacity == 0) {
+        return;
+    }
+    if (syncHistoryCapacitySamples_ != wantedCapacity) {
+        syncHistoryRing_.assign(wantedCapacity, 0);
+        syncHistoryCapacitySamples_ = wantedCapacity;
+        syncHistoryStartSample_ = 0;
+        syncHistorySizeSamples_ = 0;
+        syncHistoryFirstSample_ = videoSampleCursor_;
+        resetVerticalEdgeHistory();
+    }
+
+    const auto skippedInputSamples = syncVideo.size() > syncHistoryCapacitySamples_
+            ? syncVideo.size() - syncHistoryCapacitySamples_
+            : 0U;
+    const auto incomingSamples = syncVideo.size() - skippedInputSamples;
+    if (incomingSamples == 0) {
+        return;
+    }
+
+    const auto requiredDropSamples =
+            incomingSamples > (syncHistoryCapacitySamples_ - syncHistorySizeSamples_)
+                    ? incomingSamples - (syncHistoryCapacitySamples_ - syncHistorySizeSamples_)
+                    : 0U;
+    if (requiredDropSamples > 0) {
+        syncHistoryStartSample_ =
+                (syncHistoryStartSample_ + requiredDropSamples) % syncHistoryCapacitySamples_;
+        syncHistorySizeSamples_ -= std::min(requiredDropSamples, syncHistorySizeSamples_);
+        syncHistoryFirstSample_ += static_cast<double>(requiredDropSamples);
+    }
+    if (syncHistorySizeSamples_ == 0) {
+        syncHistoryFirstSample_ = videoSampleCursor_ + static_cast<double>(skippedInputSamples);
+    }
+
+    std::size_t writeSample =
+            (syncHistoryStartSample_ + syncHistorySizeSamples_) % syncHistoryCapacitySamples_;
+    std::size_t copiedSamples = 0;
+    while (copiedSamples < incomingSamples) {
+        const auto spanSamples = std::min(
+                incomingSamples - copiedSamples,
+                syncHistoryCapacitySamples_ - writeSample);
+        const auto sourceOffset = skippedInputSamples + copiedSamples;
+        std::copy(
+                syncVideo.begin() + static_cast<std::ptrdiff_t>(sourceOffset),
+                syncVideo.begin() + static_cast<std::ptrdiff_t>(sourceOffset + spanSamples),
+                syncHistoryRing_.begin() + static_cast<std::ptrdiff_t>(writeSample));
+        syncHistorySizeSamples_ += spanSamples;
+        copiedSamples += spanSamples;
+        writeSample = (writeSample + spanSamples) % syncHistoryCapacitySamples_;
+    }
+}
+
+void AnalogVideoDecoder::appendVerticalEdgeCandidates(
+        const std::vector<std::size_t>& frameSyncEdges,
+        std::uint64_t videoSampleRateHz,
+        double quality) {
+    if (frameSyncEdges.empty()) {
+        return;
+    }
+
+    const auto lineSamples = std::max<std::size_t>(
+            1U,
+            samplesPerLineAtRate(videoSampleRateHz, config_.timing.lineRateHz));
+    for (const auto edge : frameSyncEdges) {
+        const double absoluteSample = videoSampleCursor_ + static_cast<double>(edge);
+        const auto duplicate = std::find_if(
+                verticalEdgeHistory_.begin(),
+                verticalEdgeHistory_.end(),
+                [&](const VerticalEdgeCandidate& candidate) {
+                    return std::fabs(candidate.absoluteSample - absoluteSample) <=
+                            static_cast<double>(lineSamples);
+                });
+        if (duplicate != verticalEdgeHistory_.end()) {
+            duplicate->quality = std::max(duplicate->quality, quality);
+            continue;
+        }
+        verticalEdgeHistory_.push_back({absoluteSample, quality});
+    }
+
+    const double oldestKeptSample = syncHistorySizeSamples_ == 0
+            ? videoSampleCursor_
+            : syncHistoryFirstSample_;
+    verticalEdgeHistory_.erase(
+            std::remove_if(
+                    verticalEdgeHistory_.begin(),
+                    verticalEdgeHistory_.end(),
+                    [&](const VerticalEdgeCandidate& candidate) {
+                        return candidate.absoluteSample < oldestKeptSample;
+                    }),
+            verticalEdgeHistory_.end());
+}
+
+double AnalogVideoDecoder::standardFieldPeriodSamples(std::uint64_t videoSampleRateHz) const {
+    if (videoSampleRateHz == 0) {
+        return 0.0;
+    }
+
+    double frameRateHz = config_.timing.frameRateHz;
+    if (config_.timing.standard == VideoStandard::PAL625_25FPS) {
+        frameRateHz = 25.0;
+    } else if (config_.timing.standard == VideoStandard::NTSC_525_30FPS) {
+        frameRateHz = 30000.0 / 1001.0;
+    }
+    if (frameRateHz <= 0.0) {
+        return 0.0;
+    }
+    return static_cast<double>(videoSampleRateHz) / (frameRateHz * 2.0);
+}
+
+std::size_t AnalogVideoDecoder::strictFrameSyncEdges(
+        const std::vector<std::size_t>& frameSyncEdges,
+        std::uint64_t videoSampleRateHz,
+        std::vector<std::size_t>& selectedFrameSyncEdges) {
+    selectedFrameSyncEdges.clear();
+    lastStrictVEdgeChainLength_ = 0;
+    lastStrictVEdgeIntervalError_ = 0.0;
+    strictTimelineEdgeSamples_.clear();
+    if (!config_.timing.interlaced || frameSyncEdges.empty() || verticalEdgeHistory_.empty()) {
+        return 0;
+    }
+
+    const double fieldPeriodSamples = standardFieldPeriodSamples(videoSampleRateHz);
+    const auto lineSamples = samplesPerLineAtRate(videoSampleRateHz, config_.timing.lineRateHz);
+    if (fieldPeriodSamples <= 1.0 || lineSamples == 0) {
+        return 0;
+    }
+
+    const double frameStartSample = videoSampleCursor_;
+    const double frameEndSample = frameStartSample + static_cast<double>(syncVideo_.size());
+    const double lockedToleranceSamples = static_cast<double>(lineSamples) * 3.0;
+    const double initialToleranceSamples = static_cast<double>(lineSamples) * 8.0;
+
+    auto findCurrentEdgeNear = [&](double prediction, double tolerance, double& error) {
+        auto bestEdge = static_cast<std::size_t>(-1);
+        double bestError = tolerance + 1.0;
+        for (const auto edge : frameSyncEdges) {
+            const double absoluteEdge = frameStartSample + static_cast<double>(edge);
+            const double candidateError = absoluteEdge - prediction;
+            if (std::fabs(candidateError) < std::fabs(bestError) &&
+                std::fabs(candidateError) <= tolerance) {
+                bestError = candidateError;
+                bestEdge = edge;
+            }
+        }
+        error = bestError;
+        return bestEdge;
+    };
+
+    auto findPreviousCandidate = [&](double target, double tolerance, double& error) {
+        const VerticalEdgeCandidate* best = nullptr;
+        double bestError = tolerance + 1.0;
+        for (const auto& candidate : verticalEdgeHistory_) {
+            if (candidate.absoluteSample >= target + tolerance ||
+                candidate.absoluteSample >= frameEndSample) {
+                continue;
+            }
+            const double candidateError = candidate.absoluteSample - target;
+            if (std::fabs(candidateError) <= tolerance &&
+                std::fabs(candidateError) < std::fabs(bestError)) {
+                bestError = candidateError;
+                best = &candidate;
+            }
+        }
+        error = bestError;
+        return best;
+    };
+
+    if (strictVEdgeLocked_) {
+        auto bestEdge = static_cast<std::size_t>(-1);
+        double bestError = lockedToleranceSamples + 1.0;
+        for (const auto edge : frameSyncEdges) {
+            const double absoluteEdge = frameStartSample + static_cast<double>(edge);
+            const double periodsSinceLock =
+                    std::round((absoluteEdge - strictLockedVEdgeSample_) / fieldPeriodSamples);
+            if (periodsSinceLock < 1.0) {
+                continue;
+            }
+            const double predictedEdge =
+                    strictLockedVEdgeSample_ + (periodsSinceLock * fieldPeriodSamples);
+            double error = 0.0;
+            const auto candidateEdge = findCurrentEdgeNear(
+                    predictedEdge,
+                    lockedToleranceSamples,
+                    error);
+            if (candidateEdge != static_cast<std::size_t>(-1) &&
+                std::fabs(error) < std::fabs(bestError)) {
+                bestError = error;
+                bestEdge = candidateEdge;
+            }
+        }
+        if (bestEdge != static_cast<std::size_t>(-1)) {
+            strictLockedVEdgeSample_ = frameStartSample + static_cast<double>(bestEdge);
+            lastStrictVEdgeSample_ = strictLockedVEdgeSample_;
+            lastStrictVEdgeIntervalError_ = bestError;
+            lastStrictVEdgeChainLength_ = 1;
+            strictTimelineEdgeSamples_.push_back(strictLockedVEdgeSample_);
+            double previousEdge = strictLockedVEdgeSample_ - fieldPeriodSamples;
+            for (std::size_t index = 0; index < 5U; ++index) {
+                double previousError = 0.0;
+                const auto* previous = findPreviousCandidate(
+                        previousEdge,
+                        initialToleranceSamples,
+                        previousError);
+                if (previous == nullptr) {
+                    break;
+                }
+                strictTimelineEdgeSamples_.push_back(previous->absoluteSample);
+                previousEdge = previous->absoluteSample - fieldPeriodSamples;
+            }
+            lastStrictVEdgeChainLength_ = strictTimelineEdgeSamples_.size();
+            strictVEdgeMissCount_ = 0;
+            selectedFrameSyncEdges.push_back(bestEdge);
+            return selectedFrameSyncEdges.size();
+        }
+
+        ++strictVEdgeMissCount_;
+        if (strictVEdgeMissCount_ >= 3U) {
+            strictVEdgeLocked_ = false;
+            strictLockedVEdgeSample_ = 0.0;
+        }
+    }
+
+    struct ChainScore {
+        std::size_t edge = static_cast<std::size_t>(-1);
+        double absoluteEdge = 0.0;
+        std::size_t length = 0;
+        double meanError = std::numeric_limits<double>::max();
+        double quality = 0.0;
+        std::vector<double> chainEdges;
+    };
+
+    ChainScore best;
+    for (const auto edge : frameSyncEdges) {
+        const double absoluteEdge = frameStartSample + static_cast<double>(edge);
+        std::size_t chainLength = 1;
+        double totalError = 0.0;
+        double qualitySum = 0.0;
+        double probe = absoluteEdge;
+        std::vector<double> chainEdges;
+        chainEdges.push_back(absoluteEdge);
+        for (std::size_t step = 0; step < 6U; ++step) {
+            double error = 0.0;
+            const auto* previous = findPreviousCandidate(
+                    probe - fieldPeriodSamples,
+                    initialToleranceSamples,
+                    error);
+            if (previous == nullptr) {
+                break;
+            }
+            ++chainLength;
+            totalError += std::fabs(error);
+            qualitySum += previous->quality;
+            probe = previous->absoluteSample;
+            chainEdges.push_back(previous->absoluteSample);
+        }
+
+        if (chainLength < 3U) {
+            continue;
+        }
+        const double meanError = totalError / static_cast<double>(chainLength - 1U);
+        const double meanQuality = qualitySum / static_cast<double>(chainLength - 1U);
+        const bool betterLength = chainLength > best.length;
+        const bool sameLengthLowerError =
+                chainLength == best.length && meanError < best.meanError;
+        const bool closeErrorBetterQuality =
+                chainLength == best.length &&
+                std::fabs(meanError - best.meanError) <= static_cast<double>(lineSamples) &&
+                meanQuality > best.quality;
+        if (best.edge == static_cast<std::size_t>(-1) ||
+            betterLength ||
+            sameLengthLowerError ||
+            closeErrorBetterQuality) {
+            best.edge = edge;
+            best.absoluteEdge = absoluteEdge;
+            best.length = chainLength;
+            best.meanError = meanError;
+            best.quality = meanQuality;
+            best.chainEdges = std::move(chainEdges);
+        }
+    }
+
+    if (best.edge == static_cast<std::size_t>(-1)) {
+        return 0;
+    }
+
+    strictVEdgeLocked_ = true;
+    strictLockedVEdgeSample_ = best.absoluteEdge;
+    lastStrictVEdgeSample_ = best.absoluteEdge;
+    lastStrictVEdgeIntervalError_ = best.meanError;
+    lastStrictVEdgeChainLength_ = best.length;
+    strictTimelineEdgeSamples_ = std::move(best.chainEdges);
+    strictVEdgeMissCount_ = 0;
+    selectedFrameSyncEdges.push_back(best.edge);
+    return selectedFrameSyncEdges.size();
 }
 
 VideoFrame AnalogVideoDecoder::assembleBestFieldPreviewFrame(

@@ -69,6 +69,12 @@ Caveat: `app/src/main/cpp/CMakeLists.txt` currently applies `-O3` globally, incl
 - Fixed h_sync_missing_rate to use the decimated video line length.
 - Implemented K as a sync-only LPF path: `videoBaseband_` remains the pixel source, `syncBaseband_`/`syncVideo_` drive `SyncDetector`.
 - Added sync_lpf_cutoff_hz to frame diagnostics.
+- Added decoder-side sync history ring over the decimated sync-video path. This stores sync-domain samples, not raw IQ, because V-edge selection happens after FM demod + sync LPF and the memory footprint is much smaller.
+- Added strict V-edge tracker using absolute video-sample offsets. It selects frame-sync edges only when they form a chain at the standard interlaced field interval: PAL 25 fps -> 50 fields/s, NTSC 29.97 fps -> 59.94 fields/s.
+- Added `FrameAssembler::chooseFieldPreviewStartFromFrameSyncEdge(...)` so strict V-edge selection can drive active-start mapping without falling back to full-buffer active-window search.
+- Added diagnostics: `strict_frame_sync_edges`, `strict_v_locked`, `strict_v_chain`, `strict_v_misses`, `strict_v_edge_sample`, `strict_v_interval_err`, `sync_history_samples`.
+- Added visual edge timeline under the video output. `EdgeTimelineView` draws strict accepted edges as green vertical bars and skipped detected frame-sync edges as semi-transparent red bars.
+- Native diagnostics now include `timeline_samples`, `timeline_strict_edges`, and `timeline_skipped_edges`; Kotlin parses these from each analog playback frame while preserving the existing slower text-panel update cadence.
 
 ## Diagnostics To Watch
 

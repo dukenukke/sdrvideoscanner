@@ -306,6 +306,38 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
             samplesPerActiveLine);
 }
 
+std::size_t FrameAssembler::chooseFieldPreviewStartFromFrameSyncEdge(
+        const std::vector<std::uint8_t>& video,
+        const std::vector<std::size_t>& syncStarts,
+        std::size_t frameSyncEdge,
+        std::uint64_t sampleRateHz) const {
+    if (!shouldBobInterlaced() || syncStarts.empty()) {
+        return static_cast<std::size_t>(-1);
+    }
+
+    const auto lineLengthSamples = samplesPerLine(sampleRateHz);
+    const auto activeOffset = activeStartOffset(sampleRateHz);
+    const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
+    const auto sourceLineCount = interlacedSourceLineCount();
+    const auto maxUsableStart = syncStarts.size() > sourceLineCount
+            ? syncStarts.size() - sourceLineCount
+            : 0U;
+    const auto targetSync = std::lower_bound(syncStarts.begin(), syncStarts.end(), frameSyncEdge);
+    if (targetSync == syncStarts.end()) {
+        return static_cast<std::size_t>(-1);
+    }
+
+    const auto edgeSyncIndex = static_cast<std::size_t>(
+            std::distance(syncStarts.begin(), targetSync));
+    return chooseActiveStartNearFieldSync(
+            video,
+            syncStarts,
+            edgeSyncIndex,
+            activeOffset,
+            samplesPerActiveLine,
+            maxUsableStart);
+}
+
 VideoFrame FrameAssembler::assembleRawRaster(
         const std::vector<std::uint8_t>& video,
         std::uint64_t sampleRateHz,

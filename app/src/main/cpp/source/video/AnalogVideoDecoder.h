@@ -35,9 +35,28 @@ public:
     VideoFrame decodeOneFrame(ISampleSource& source);
 
 private:
+    struct VerticalEdgeCandidate {
+        double absoluteSample = 0.0;
+        double quality = 0.0;
+    };
+
     std::size_t frameSampleCount();
     double frameReadGuardLines() const;
     void resetVerticalSampleLock();
+    void resetVerticalEdgeHistory();
+    void appendSyncHistory(
+            const std::vector<std::uint8_t>& syncVideo,
+            std::uint64_t videoSampleRateHz);
+    void appendVerticalEdgeCandidates(
+            const std::vector<std::size_t>& frameSyncEdges,
+            std::uint64_t videoSampleRateHz,
+            double quality);
+    double standardFieldPeriodSamples(std::uint64_t videoSampleRateHz) const;
+    std::size_t strictFrameSyncEdges(
+            const std::vector<std::size_t>& frameSyncEdges,
+            std::uint64_t videoSampleRateHz,
+            std::vector<std::size_t>& selectedFrameSyncEdges);
+    void updateTimelineEdgeDiagnostics(std::uint64_t videoSampleRateHz);
     VideoFrame assembleBestFieldPreviewFrame(
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,
@@ -73,6 +92,24 @@ private:
     std::vector<float> syncBaseband_;
     std::vector<std::uint8_t> video_;
     std::vector<std::uint8_t> syncVideo_;
+    std::vector<std::uint8_t> syncHistoryRing_;
+    std::vector<VerticalEdgeCandidate> verticalEdgeHistory_;
+    std::vector<std::size_t> strictSelectedFrameSyncEdges_;
+    std::vector<std::size_t> skippedFrameSyncEdges_;
+    std::vector<double> strictTimelineEdgeSamples_;
+    std::vector<std::size_t> timelineStrictEdges_;
+    std::vector<std::size_t> timelineSkippedEdges_;
+    std::vector<std::size_t> emptyFrameSyncEdges_;
+    std::size_t syncHistoryCapacitySamples_ = 0;
+    std::size_t syncHistoryStartSample_ = 0;
+    std::size_t syncHistorySizeSamples_ = 0;
+    double syncHistoryFirstSample_ = 0.0;
+    bool strictVEdgeLocked_ = false;
+    double strictLockedVEdgeSample_ = 0.0;
+    double lastStrictVEdgeSample_ = 0.0;
+    double lastStrictVEdgeIntervalError_ = 0.0;
+    std::size_t lastStrictVEdgeChainLength_ = 0;
+    std::size_t strictVEdgeMissCount_ = 0;
     double fastFieldSampleRemainder_ = 0.0;
     bool fieldStartLocked_ = false;
     std::size_t fieldStartSyncIndex_ = 0;

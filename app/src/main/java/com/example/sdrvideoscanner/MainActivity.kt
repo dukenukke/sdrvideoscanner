@@ -228,6 +228,7 @@ class MainActivity : AppCompatActivity() {
         }
         updateCurrentFrequencyLabel(plutoIqConfig.centerFrequencyHz)
         binding.videoFrameContainer.visibility = View.GONE
+        binding.edgeTimelineView.setTimeline(null)
         renderSignalTable()
         updateScannerUi()
     }
@@ -475,7 +476,13 @@ class MainActivity : AppCompatActivity() {
         scanController.clearRecords()
         scanController.startScanningNear(config.centerFrequencyHz)
         binding.videoFrameContainer.visibility = View.GONE
+        binding.edgeTimelineView.setTimeline(null)
         binding.videoFrameImage.setImageDrawable(null)
+        binding.sampleText.text = scannerProgressText(
+            title = "Scanner started",
+            channel = null,
+            config = config,
+        )
         renderSignalTable()
         updateScannerUi()
         scheduleNextScanStep(0L)
@@ -510,6 +517,7 @@ class MainActivity : AppCompatActivity() {
         scanController.clearRecords()
         scanController.startScanningNear(plutoIqConfig.centerFrequencyHz)
         binding.videoFrameContainer.visibility = View.GONE
+        binding.edgeTimelineView.setTimeline(null)
         binding.nextButton.isEnabled = false
         renderSignalTable()
         updateScannerUi()
@@ -628,6 +636,11 @@ class MainActivity : AppCompatActivity() {
         currentScannerChannel = channel
         scanController.startScanning()
         updateScannerUi()
+        binding.sampleText.text = scannerProgressText(
+            title = "Scanning live Pluto IP IIO",
+            channel = channel,
+            config = scannerConfigForChannel(channel),
+        )
         decodeExecutor.execute {
             val initialResult = probeChannelForSignal(channel, ScannerProbeProfile.QUICK)
             val confirmed = if (initialResult.signalPresent) {
@@ -1216,6 +1229,28 @@ class MainActivity : AppCompatActivity() {
             append("\nframe_sync_edges: ${frameSyncEdges?.toInt() ?: -1}")
             append("\nsync_score: ${syncScore?.let { String.format(Locale.US, "%.4f", it) } ?: "--"}")
             append("\nline_stability: ${lineStability?.let { String.format(Locale.US, "%.4f", it) } ?: "--"}")
+        }
+    }
+
+    private fun scannerProgressText(
+        title: String,
+        channel: KnownChannel?,
+        config: PlutoIqConfig,
+    ): String {
+        return buildString {
+            append(title)
+            append("\n\nsource: Pluto IP IIO live scan")
+            append("\nsample_format: ${config.sampleFormat.metadataValue}")
+            append("\nsample_rate_hz: ${config.sampleRateHz}")
+            append("\nrf_bandwidth_hz: ${config.rfBandwidthHz}")
+            append("\ngain_db: ${String.format(Locale.US, "%.1f", config.gainDb)}")
+            append("\nrecording_to_file: no")
+            if (channel != null) {
+                append("\n\nchannel: ${channel.bandName} / ${channel.channelName}")
+                append("\ncenter_frequency_hz: ${channel.centerFrequencyHz}")
+                append("\ncenter_frequency: ${formatFrequency(channel.centerFrequencyHz)}")
+            }
+            append("\n\nWaiting for live probe results...")
         }
     }
 
@@ -1813,6 +1848,7 @@ class MainActivity : AppCompatActivity() {
             plutoMissingSinceMs = SystemClock.elapsedRealtime()
         }
         binding.videoFrameContainer.visibility = View.GONE
+        binding.edgeTimelineView.setTimeline(null)
         binding.sampleText.text = buildString {
             append("ALARM: Pluto scanner link failed. Scanning stopped.\n\n")
             append("channel: ${channel.bandName} / ${channel.channelName} / ${formatFrequency(channel.centerFrequencyHz)}\n")
@@ -2013,18 +2049,20 @@ class MainActivity : AppCompatActivity() {
         val frame = decodeFrame(path, metadata, standard, frameIndex)
         if (frame == null) {
             binding.videoFrameImage.setImageDrawable(null)
+            binding.edgeTimelineView.setTimeline(null)
             binding.sampleText.text = metadata.toDiagnosticText() +
                 "\n\nAnalog FPV video frame decode failed. sample_rate_hz metadata is required and the IQ file must contain enough samples."
             return
         }
 
-        setVideoFrameBitmap(frame.bitmap)
+        setVideoFrameBitmap(frame.bitmap, frame.edgeTimeline)
         binding.sampleText.text = metadata.toDiagnosticText() + "\n\n" + frame.diagnostic
     }
 
-    private fun setVideoFrameBitmap(bitmap: Bitmap) {
+    private fun setVideoFrameBitmap(bitmap: Bitmap, edgeTimeline: EdgeTimelineData? = null) {
         binding.videoFrameContainer.visibility = View.VISIBLE
         binding.videoFrameImage.setImageBitmap(bitmap)
+        binding.edgeTimelineView.setTimeline(edgeTimeline)
         binding.videoFrameImage.post {
             val availableWidth = binding.videoFrameImage.width
             if (availableWidth <= 0 || bitmap.width <= 0 || bitmap.height <= 0) {
@@ -2184,7 +2222,7 @@ class MainActivity : AppCompatActivity() {
 
             val frame = grayscaleFramePacketToBitmap(
                 packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle),
-                includeDiagnostic = (frameIndex % PLAYBACK_DIAGNOSTIC_EVERY_FRAMES) == 0L,
+                includeDiagnostic = true,
             )
             mainHandler.post {
                 if (!playbackSessionActive(generation)) {
@@ -2206,7 +2244,7 @@ class MainActivity : AppCompatActivity() {
                     return@post
                 }
 
-                setVideoFrameBitmap(frame.bitmap)
+                setVideoFrameBitmap(frame.bitmap, frame.edgeTimeline)
                 if ((frameIndex % PLAYBACK_DIAGNOSTIC_EVERY_FRAMES) == 0L) {
                     updateSampleText(
                         metadata.toDiagnosticText() +
@@ -4337,7 +4375,41 @@ class MainActivity : AppCompatActivity() {
         } else {
             ""
         }
-        return DecodedFrame(bitmap = bitmap, diagnostic = diagnostic)
+        return DecodedFrame(
+            bitmap = bitmap,
+            diagnostic = diagnostic,
+            edgeTimeline = edgeTimelineFromDiagnostic(diagnostic),
+        )
+    }
+
+    private fun edgeTimelineFromDiagnostic(diagnostic: String): EdgeTimelineData? {
+        if (diagnostic.isBlank()) {
+            return null
+        }
+        val sampleCount = diagnosticNumber(diagnostic, "timeline_samples")
+            ?.toInt()
+            ?.takeIf { it > 0 }
+            ?: return null
+        return EdgeTimelineData(
+            sampleCount = sampleCount,
+            strictEdges = diagnosticIntList(diagnostic, "timeline_strict_edges", sampleCount),
+            skippedEdges = diagnosticIntList(diagnostic, "timeline_skipped_edges", sampleCount),
+        )
+    }
+
+    private fun diagnosticIntList(
+        diagnostic: String,
+        key: String,
+        maxValue: Int,
+    ): List<Int> {
+        val regex = Regex("""\b${Regex.escape(key)}\s*[:=]\s*([0-9]+(?:,[0-9]+)*)?""")
+        val raw = regex.find(diagnostic)?.groupValues?.getOrNull(1).orEmpty()
+        if (raw.isBlank()) {
+            return emptyList()
+        }
+        return raw.split(',')
+            .mapNotNull { value -> value.toIntOrNull() }
+            .filter { value -> value in 0..maxValue }
     }
 
     private fun readLittleEndianInt(bytes: ByteArray, offset: Int): Int {
@@ -4399,6 +4471,7 @@ class MainActivity : AppCompatActivity() {
     private data class DecodedFrame(
         val bitmap: Bitmap,
         val diagnostic: String,
+        val edgeTimeline: EdgeTimelineData?,
     )
 
     private enum class ScannerProbeProfile {
