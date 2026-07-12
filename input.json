@@ -1,11 +1,17 @@
 {
-  "format": "CS16",
+  "format": "CS8",
   "endianness": "little",
   "sample_rate_hz": 25000000,
-  "center_frequency_hz": 5885000000,
+  "center_frequency_hz": 5917000000,
   "rf_bandwidth_hz": 20000000,
-  "gain_db": 40,
-  "source": "video_decoder_c",
+  "lo_offset_hz": 0,
+  "actual_lo_frequency_hz": 5917000000,
+  "gain_db": 34,
+  "hardware_iq_correction": true,
+  "hardware_bbdc_correction": true,
+  "hardware_rfdc_correction": true,
+  "source": "pluto_iio_ip",
   "device": "PlutoSDR",
-  "duration_sec": 5
+  "uri": "ip:192.168.2.1",
+  "duration_sec": 3
 }

@@ -113,6 +113,15 @@ std::uint64_t decimatedRate(std::uint64_t inputRateHz, std::uint64_t analysisRat
     return inputRateHz / decimation;
 }
 
+std::size_t samplesPerLineAtRate(std::uint64_t sampleRateHz, double lineRateHz) {
+    if (sampleRateHz == 0 || lineRateHz <= 0.0) {
+        return 0;
+    }
+
+    return static_cast<std::size_t>(
+            std::max(1.0, std::round(static_cast<double>(sampleRateHz) / lineRateHz)));
+}
+
 std::size_t applyFrameReadMultiplier(std::size_t sampleCount, double multiplier) {
     if (sampleCount == 0) {
         return 0;
@@ -234,8 +243,9 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             sample = static_cast<std::uint8_t>(255U - sample);
         }
     }
-    const auto expectedHorizontalSyncs = samplesPerLine() > 0U
-            ? static_cast<double>(video_.size()) / static_cast<double>(samplesPerLine())
+    const auto videoLineSamples = samplesPerLineAtRate(videoSampleRateHz, config_.timing.lineRateHz);
+    const auto expectedHorizontalSyncs = videoLineSamples > 0U
+            ? static_cast<double>(video_.size()) / static_cast<double>(videoLineSamples)
             : 0.0;
     lastHSyncMissingRate_ = expectedHorizontalSyncs > 1.0
             ? std::clamp(
@@ -296,15 +306,16 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
                                     previousLockedStartSyncIndex,
                                     videoSampleRateHz);
                             if (preservedLockFrame.valid() &&
-                                preservedLockFrame.doubleImageScore <= frame.doubleImageScore + 8.0) {
+                                !isBadSequentialFieldFrame(preservedLockFrame)) {
                                 preservedLockFrame.message +=
                                         "; rejected bad sequential field; displayed preserved lock";
                                 frame = std::move(preservedLockFrame);
+                                acceptVerticalSampleStart(syncDetection.syncStarts, fieldStartSyncIndex);
                             } else {
                                 frame.message +=
-                                        "; rejected bad sequential field; previous lock preserved";
+                                        "; rejected bad sequential field; preserved lock also bad; relock requested";
+                                resetVerticalSampleLock();
                             }
-                            acceptVerticalSampleStart(syncDetection.syncStarts, fieldStartSyncIndex);
                         } else {
                             frame.message += "; rejected bad sequential field; lock not committed";
                             resetVerticalSampleLock();
@@ -629,7 +640,9 @@ std::size_t AnalogVideoDecoder::sampleLockedFieldStartSyncIndex(
             ? syncStarts.size() - sourceLineCount
             : 0U;
     const auto boundedCandidate = std::min(candidateStartSyncIndex, maxUsableStart);
-    const auto lineSamples = std::max<std::size_t>(1U, samplesPerLine());
+    const auto lineSamples = std::max<std::size_t>(
+            1U,
+            samplesPerLineAtRate(videoSampleRateHz, config_.timing.lineRateHz));
     const double fieldPeriodSamples =
             static_cast<double>(videoSampleRateHz) / (config_.timing.frameRateHz * 2.0);
     const double frameStartSample = videoSampleCursor_;
@@ -807,13 +820,7 @@ std::size_t AnalogVideoDecoder::lockedFieldStartSyncIndex(
 }
 
 std::size_t AnalogVideoDecoder::samplesPerLine() const {
-    if (config_.sampleRateHz == 0 || config_.timing.lineRateHz <= 0.0) {
-        return 0;
-    }
-
-    return static_cast<std::size_t>(
-            std::max(1.0, std::round(static_cast<double>(config_.sampleRateHz) /
-                                     config_.timing.lineRateHz)));
+    return samplesPerLineAtRate(config_.sampleRateHz, config_.timing.lineRateHz);
 }
 
 }  // namespace sdr

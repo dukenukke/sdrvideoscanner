@@ -25,6 +25,9 @@ build/
 
 *.apk
 *.aab
+*.cs8
+*.cs16
+*.iq
 
 captures/
 logs/

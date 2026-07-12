@@ -133,6 +133,11 @@ class MainActivity : AppCompatActivity() {
                             startPlutoUsbCapture(path, device, config)
                         }
                     }
+                    PlutoUsbAction.IP_IIO_CAPTURE -> {
+                        if (path != null) {
+                            startPlutoIpIioCapture(path, config)
+                        }
+                    }
                     PlutoUsbAction.LIVE_PLAYBACK -> startPlutoUsbPlayback(device, standard, config)
                     PlutoUsbAction.IP_IIO_PLAYBACK -> startPlutoIpIioPlayback(standard, config)
                     PlutoUsbAction.SPECTRUM_VIEW -> startPlutoUsbSpectrum(device, config)
@@ -212,15 +217,17 @@ class MainActivity : AppCompatActivity() {
         binding.nextButton.setOnClickListener {
             skipCurrentSignalAndResumeScan()
         }
-        binding.prevChannelButton.setOnClickListener {
-            retunePlaybackToAdjacentChannel(-1)
+        binding.gainDownButton.setOnClickListener {
+            adjustManualPlutoGain(-5.0)
         }
-        binding.nextChannelButton.setOnClickListener {
-            retunePlaybackToAdjacentChannel(1)
+        binding.gainModeButton.setOnClickListener {
+            toggleManualGainControl()
+        }
+        binding.gainUpButton.setOnClickListener {
+            adjustManualPlutoGain(5.0)
         }
         updateCurrentFrequencyLabel(plutoIqConfig.centerFrequencyHz)
         binding.videoFrameContainer.visibility = View.GONE
-        binding.channelStepControls.visibility = View.GONE
         renderSignalTable()
         updateScannerUi()
     }
@@ -244,8 +251,8 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, MENU_TUNE_FREQUENCY, 4, "Tune Frequency")
             menu.add(0, MENU_RECORD_IQ, 5, "Record IQ")
             menu.add(0, MENU_PLUTO_WS_FFT, 6, "Pluto WS FFT")
-            menu.add(0, MENU_PLAY_AUTO_FILE, 7, "Play AUTO file")
-            menu.add(0, MENU_DECODE_AUTO_FILE, 8, "Decode AUTO file")
+            menu.add(0, MENU_PLAY_AUTO_FILE, 7, "Play IQ file")
+            menu.add(0, MENU_DECODE_AUTO_FILE, 8, "Decode IQ frame")
             menu.add(0, MENU_ABOUT, 9, "About")
             setOnMenuItemClickListener { item ->
                 runMainMenuAction(item.itemId, item.title.toString())
@@ -280,11 +287,12 @@ class MainActivity : AppCompatActivity() {
             MENU_SETUP_IQ -> showPlutoIqConfigDialog()
             MENU_TUNE_FREQUENCY -> showCenterFrequencyDialog()
             MENU_RECORD_IQ -> {
+                val captureConfig = captureConfigForCurrentSelection()
                 stopScannerMode()
                 stopPlayback()
                 stopSpectrum()
                 activeMode = ActiveMode.RECORD_IQ
-                preparePlutoUsbCapture(defaultIqPathForConfig(), plutoIqConfig)
+                preparePlutoIpIioCapture(defaultIqPathForConfig(captureConfig), captureConfig)
             }
             MENU_PLUTO_WS_FFT -> {
                 stopScannerMode()
@@ -515,7 +523,7 @@ class MainActivity : AppCompatActivity() {
             "Scan"
         }
         binding.nextButton.isEnabled = selectedPlaybackChannel != null
-        updateChannelStepControls()
+        updateGainControls()
         binding.scannerStateLabel.text = buildString {
             append("Scanner: ")
             append(scanController.state.name.lowercase(Locale.US))
@@ -542,6 +550,8 @@ class MainActivity : AppCompatActivity() {
             append(snapshot.rfFrontendMode.name)
             append(" | Mode: ")
             append(snapshot.mode.name)
+            append(" | Gain Control: ")
+            append(if (snapshot.manualGainControl) "MANUAL" else "AGC")
             append(" | Pluto Gain: ")
             append(String.format(Locale.US, "%.1f dB", snapshot.plutoGainDb))
             append(" | LNA: ")
@@ -939,6 +949,21 @@ class MainActivity : AppCompatActivity() {
         return plutoIqConfig.copy(centerFrequencyHz = channel.centerFrequencyHz)
     }
 
+    private fun captureConfigForCurrentSelection(): PlutoIqConfig {
+        val selectedChannel = selectedPlaybackChannel
+        val baseConfig = if (selectedChannel != null) {
+            configForChannel(selectedChannel)
+        } else {
+            currentPlutoSessionRecovery()?.config ?: plutoIqConfig
+        }
+        return baseConfig
+            .forcedSampleFormat(IqSampleFormat.CS8)
+            .copy(
+                gainDb = gainController.currentPlutoGainDb,
+                captureDurationSec = baseConfig.captureDurationSec.coerceAtLeast(RECORD_IQ_MIN_CAPTURE_DURATION_SEC),
+            )
+    }
+
     private fun scannerConfigForChannel(channel: KnownChannel): PlutoIqConfig {
         return configForChannel(channel).copy(
             sampleFormat = IqSampleFormat.CS8,
@@ -1331,10 +1356,76 @@ class MainActivity : AppCompatActivity() {
         startSelectedChannelPlayback(target)
     }
 
-    private fun updateChannelStepControls() {
-        binding.channelStepControls.visibility = View.GONE
-        binding.prevChannelButton.isEnabled = false
-        binding.nextChannelButton.isEnabled = false
+    private fun updateGainControls() {
+        val snapshot = gainController.snapshot()
+        binding.gainControls.visibility = View.VISIBLE
+        binding.gainModeButton.text = if (snapshot.manualGainControl) {
+            "Manual"
+        } else {
+            "AGC"
+        }
+        binding.gainDownButton.isEnabled = true
+        binding.gainModeButton.isEnabled = true
+        binding.gainUpButton.isEnabled = true
+    }
+
+    private fun toggleManualGainControl() {
+        val snapshot = gainController.setManualGainControl(!gainController.isManualGainControl)
+        applyGainSnapshotToUiAndActiveSession(snapshot, restartActivePlayback = snapshot.manualGainControl)
+    }
+
+    private fun adjustManualPlutoGain(deltaDb: Double) {
+        val snapshot = gainController.adjustPlutoGain(deltaDb)
+        applyGainSnapshotToUiAndActiveSession(snapshot, restartActivePlayback = true)
+    }
+
+    private fun applyGainSnapshotToUiAndActiveSession(
+        snapshot: GainControllerSnapshot,
+        restartActivePlayback: Boolean,
+    ) {
+        plutoIqConfig = plutoIqConfig.copy(gainDb = snapshot.plutoGainDb)
+        pendingPlutoIqConfig = pendingPlutoIqConfig.copy(gainDb = snapshot.plutoGainDb)
+        updateScannerUi()
+        if (!restartActivePlayback) {
+            binding.sampleText.text = "Gain control switched to AGC.\n\nCurrent Pluto gain: " +
+                String.format(Locale.US, "%.1f dB", snapshot.plutoGainDb)
+            return
+        }
+        restartActivePlutoSessionWithGain(snapshot.plutoGainDb)
+    }
+
+    private fun restartActivePlutoSessionWithGain(gainDb: Double) {
+        val activePlutoSession = currentPlutoSessionRecovery()
+        val previousMode = activeMode
+        val restartConfig = (activePlutoSession?.config ?: plutoIqConfig).copy(gainDb = gainDb)
+        val restartStandard = activePlutoSession?.standard ?: VideoStandard.AUTO
+        val gainText = String.format(Locale.US, "%.1f dB", gainDb)
+        when {
+            playbackRunning && previousMode == ActiveMode.PLUTO_USB_PLAYBACK -> {
+                stopPlayback()
+                activeMode = ActiveMode.PLUTO_USB_PLAYBACK
+                binding.sampleText.text = "Manual Pluto gain changed to $gainText.\n\nRestarting Pluto IIO playback."
+                preparePlutoUsbPlayback(restartStandard, restartConfig)
+            }
+            playbackRunning && previousMode == ActiveMode.PLUTO_IP_PLAYBACK -> {
+                stopPlayback()
+                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+                binding.sampleText.text = "Manual Pluto gain changed to $gainText.\n\nRestarting Pluto IP IIO playback."
+                preparePlutoIpIioPlayback(restartStandard, restartConfig)
+            }
+            playbackRunning && previousMode == ActiveMode.PLUTO_WS_PLAYBACK -> {
+                stopPlayback()
+                activeMode = ActiveMode.PLUTO_WS_PLAYBACK
+                binding.sampleText.text = "Manual Pluto gain changed to $gainText.\n\nRestarting Pluto WebSocket playback."
+                preparePlutoWebSocketPlayback(restartStandard, restartConfig)
+            }
+            scannerRunning -> {
+                binding.sampleText.text = "Manual Pluto gain changed to $gainText.\n\nNew gain applies to the next scan/probe step."
+            }
+            else -> {
+                binding.sampleText.text = "Manual Pluto gain changed to $gainText.\n\nNew gain applies to the next Pluto session."
+            }
+        }
     }
 
     private fun adjacentAnalogChannel(channel: KnownChannel, direction: Int): KnownChannel? {
@@ -1740,8 +1831,8 @@ class MainActivity : AppCompatActivity() {
         return if (parent != null) File(parent, metadataName) else File(metadataName)
     }
 
-    private fun defaultIqPathForConfig(): String {
-        val fileName = when (plutoIqConfig.sampleFormat) {
+    private fun defaultIqPathForConfig(config: PlutoIqConfig = plutoIqConfig): String {
+        val fileName = when (config.sampleFormat) {
             IqSampleFormat.CS16 -> "input.cs16"
             IqSampleFormat.CS8 -> "input.cs8"
         }
@@ -1923,7 +2014,7 @@ class MainActivity : AppCompatActivity() {
         if (frame == null) {
             binding.videoFrameImage.setImageDrawable(null)
             binding.sampleText.text = metadata.toDiagnosticText() +
-                "\n\nAnalog FPV video frame decode failed. sample_rate_hz metadata is required and input.cs16 must contain enough IQ samples."
+                "\n\nAnalog FPV video frame decode failed. sample_rate_hz metadata is required and the IQ file must contain enough samples."
             return
         }
 
@@ -2240,6 +2331,23 @@ class MainActivity : AppCompatActivity() {
         usbManager.requestPermission(plutoDevice, permissionIntent)
     }
 
+    private fun preparePlutoIpIioCapture(
+        path: String,
+        config: PlutoIqConfig,
+    ) {
+        if (requestPlutoUsbPermissionForNetworkIfNeeded(
+                action = PlutoUsbAction.IP_IIO_CAPTURE,
+                standard = VideoStandard.AUTO,
+                config = config,
+                description = "Pluto IP IIO IQ capture",
+                capturePath = path,
+            )
+        ) {
+            return
+        }
+        startPlutoIpIioCapture(path, config)
+    }
+
     private fun preparePlutoUsbPlayback(
         standard: VideoStandard,
         config: PlutoIqConfig,
@@ -2380,6 +2488,76 @@ class MainActivity : AppCompatActivity() {
             connection,
             config,
         )
+    }
+
+    private fun startPlutoIpIioCapture(
+        path: String,
+        config: PlutoIqConfig,
+    ) {
+        val uri = plutoIioIpUri(config)
+        activeMode = ActiveMode.RECORD_IQ
+        updateSleepBlocker()
+        updateCurrentFrequencyLabel(config.centerFrequencyHz)
+        binding.sampleText.text = "Capturing Pluto IP IIO ${config.sampleFormat.metadataValue} IQ to:\n$path\n\nuri: $uri"
+        decodeExecutor.execute {
+            val connectivityManager = getSystemService(ConnectivityManager::class.java)
+            val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
+            val selection = waitForPlutoIioNetworkWithDiagnostics(host)
+            val network = selection.network
+            if (network == null || network.networkHandle == 0L) {
+                mainHandler.post {
+                    activeMode = ActiveMode.NONE
+                    updateSleepBlocker()
+                    binding.sampleText.text = "Pluto IQ capture\nstatus: failed\nuri: $uri\nerror: Android network to $host was not found\n\n" +
+                        selection.diagnostics
+                }
+                return@execute
+            }
+
+            val previousBoundNetwork = connectivityManager.boundNetworkForProcess
+            if (!connectivityManager.bindProcessToNetwork(network)) {
+                mainHandler.post {
+                    activeMode = ActiveMode.NONE
+                    updateSleepBlocker()
+                    binding.sampleText.text = "Pluto IQ capture\nstatus: failed\nuri: $uri\nerror: bindProcessToNetwork failed for ${networkLabel(network)}\n\n" +
+                        selection.diagnostics
+                }
+                return@execute
+            }
+
+            val diagnostic = try {
+                capturePlutoIqToFile(
+                    outputPath = path,
+                    uri = uri,
+                    sampleRateHz = config.sampleRateHz,
+                    centerFrequencyHz = config.centerFrequencyHz,
+                    rfBandwidthHz = config.rfBandwidthHz,
+                    gainDb = config.gainDb,
+                    sampleFormat = config.sampleFormat.nativeValue,
+                    loOffsetHz = config.loOffsetHz,
+                    hardwareIqCorrection = config.hardwareIqCorrection,
+                    hardwareBbdcCorrection = config.hardwareBbdcCorrection,
+                    hardwareRfdcCorrection = config.hardwareRfdcCorrection,
+                    durationSec = config.captureDurationSec,
+                )
+            } finally {
+                restorePlaybackNetworkBinding(previousBoundNetwork, network)
+            }
+            val captured = diagnostic.contains("status: captured")
+            if (captured) {
+                writeCaptureMetadata(path, uri, config)
+            }
+            mainHandler.post {
+                activeMode = ActiveMode.NONE
+                updateSleepBlocker()
+                binding.sampleText.text = if (captured) {
+                    diagnostic + "\n\nmetadata path: ${metadataFileFor(path).absolutePath}\n\n" +
+                        selection.diagnostics
+                } else {
+                    diagnostic + "\n\n" + selection.diagnostics
+                }
+            }
+        }
     }
 
     private fun startPlutoUsbPlayback(
@@ -3308,6 +3486,7 @@ class MainActivity : AppCompatActivity() {
         standard: VideoStandard,
         config: PlutoIqConfig,
         description: String,
+        capturePath: String? = null,
     ): Boolean {
         val usbManager = getSystemService(UsbManager::class.java)
         val plutoDevice = findPlutoUsbDevice(usbManager) ?: return false
@@ -3315,7 +3494,7 @@ class MainActivity : AppCompatActivity() {
             return false
         }
 
-        pendingPlutoCapturePath = null
+        pendingPlutoCapturePath = capturePath
         pendingPlutoUsbAction = action
         pendingPlutoVideoStandard = standard
         pendingPlutoIqConfig = config
@@ -3716,7 +3895,7 @@ class MainActivity : AppCompatActivity() {
             .put("hardware_iq_correction", config.hardwareIqCorrection)
             .put("hardware_bbdc_correction", config.hardwareBbdcCorrection)
             .put("hardware_rfdc_correction", config.hardwareRfdcCorrection)
-            .put("source", "pluto_iio_usb")
+            .put("source", if (uri.startsWith("ip:")) "pluto_iio_ip" else "pluto_iio_usb")
             .put("device", "PlutoSDR")
             .put("uri", uri)
             .put("duration_sec", config.captureDurationSec)
@@ -4027,7 +4206,7 @@ class MainActivity : AppCompatActivity() {
             maiaPort = PLUTO_WS_DEFAULT_PORT,
             plutoWebSocketPath = PLUTO_WS_DEFAULT_PATH,
             plutoWebSocketReceiveBufferMs = PLUTO_WS_RECEIVE_BUFFER_DEFAULT_MS,
-            sampleFormat = IqSampleFormat.CS16,
+            sampleFormat = IqSampleFormat.CS8,
             sampleRateHz = PLUTO_SAMPLE_RATE_HZ,
             centerFrequencyHz = PLUTO_CENTER_FREQUENCY_HZ,
             rfBandwidthHz = PLUTO_RF_BANDWIDTH_HZ,
@@ -4352,6 +4531,7 @@ class MainActivity : AppCompatActivity() {
 
     private enum class PlutoUsbAction {
         CAPTURE_TO_FILE,
+        IP_IIO_CAPTURE,
         LIVE_PLAYBACK,
         IP_IIO_PLAYBACK,
         SPECTRUM_VIEW,
@@ -4411,16 +4591,19 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Opens a little-endian CS16 I/Q file and returns first-block diagnostics.
+     * Use metadata-driven playback/FFT paths for CS8 captures.
      */
     external fun diagnoseCs16File(path: String): String
 
     /**
      * Reads a little-endian CS16 I/Q file in blocks and returns aggregate diagnostics.
+     * Use metadata-driven playback/FFT paths for CS8 captures.
      */
     external fun diagnoseCs16FileBlocks(path: String): String
 
     /**
-     * Reads a CS16 I/Q block, applies a Hann-windowed FFT, and returns spectrum diagnostics.
+     * Reads an I/Q block using metadata format, applies a Hann-windowed FFT,
+     * and returns spectrum diagnostics.
      */
     external fun diagnoseCs16Spectrum(
         path: String,
@@ -4445,7 +4628,7 @@ class MainActivity : AppCompatActivity() {
     ): String
 
     /**
-     * Captures raw CS16 IQ from PlutoSDR through libiio into a replayable file.
+     * Captures raw IQ from PlutoSDR through libiio into a replayable file.
      */
     external fun capturePlutoIqToFile(
         outputPath: String,
@@ -4675,7 +4858,8 @@ class MainActivity : AppCompatActivity() {
         private const val PLUTO_CENTER_FREQUENCY_HZ = 5_885_000_000L
         private const val PLUTO_RF_BANDWIDTH_HZ = 20_000_000L
         private const val PLUTO_GAIN_DB = 46.0
-        private const val PLUTO_CAPTURE_DURATION_SEC = 0.5
+        private const val PLUTO_CAPTURE_DURATION_SEC = 3.0
+        private const val RECORD_IQ_MIN_CAPTURE_DURATION_SEC = 3.0
         private const val PLUTO_LO_OFFSET_HZ = 0L
         private const val PLUTO_HARDWARE_IQ_CORRECTION = true
         private const val PLUTO_HARDWARE_BBDC_CORRECTION = true

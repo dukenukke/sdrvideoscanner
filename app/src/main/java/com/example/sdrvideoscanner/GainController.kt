@@ -48,6 +48,7 @@ data class GainMetrics(
 data class GainControllerSnapshot(
     val mode: GainControlMode,
     val rfFrontendMode: RfFrontendMode,
+    val manualGainControl: Boolean,
     val frequencyHz: Long?,
     val band: String?,
     val muxChannel: String?,
@@ -80,6 +81,7 @@ class GainController(
     private var lastSignalSeenMs = clockMs()
     private var lastMetrics: GainMetrics? = null
     private var lastReason = "initialized"
+    private var manualGainControl = false
 
     val currentPlutoGainDb: Double
         get() = plutoGainDb
@@ -87,13 +89,39 @@ class GainController(
     val rfFrontendMode: RfFrontendMode
         get() = effectiveRfFrontendMode()
 
+    val isManualGainControl: Boolean
+        get() = manualGainControl
+
+    fun setManualGainControl(enabled: Boolean): GainControllerSnapshot {
+        manualGainControl = enabled
+        lastReason = if (enabled) "manual gain enabled" else "automatic gain enabled"
+        return snapshot(lastReason)
+    }
+
+    fun adjustPlutoGain(deltaDb: Double): GainControllerSnapshot {
+        val beforeGain = plutoGainDb
+        plutoGainDb = clampPlutoGain(plutoGainDb + deltaDb)
+        manualGainControl = true
+        logDecision(
+            metrics = lastMetrics,
+            plutoBefore = beforeGain,
+            plutoAfter = plutoGainDb,
+            rfBefore = rfState,
+            rfAfter = rfState,
+            reason = "manual Pluto gain ${if (deltaDb >= 0.0) "+" else ""}${deltaDb.fmt()} dB",
+        )
+        return snapshot(lastReason)
+    }
+
     fun prepareScanChannel(channel: KnownChannel): GainControllerSnapshot {
         mode = GainControlMode.SCAN
         acquisitionIterations = 0
         activeFrequencyHz = channel.centerFrequencyHz
         activeBand = channel.rfFrontendProfileId ?: channel.bandName
         activeMuxChannel = channel.channelName
-        plutoGainDb = config.scanPlutoGainDb
+        if (!manualGainControl) {
+            plutoGainDb = config.scanPlutoGainDb
+        }
 
         val nextRfState = initialRfState(activeBand, activeMuxChannel)
         val beforeRf = rfState
@@ -130,6 +158,9 @@ class GainController(
         if (metrics.videoConfidence >= config.videoCandidateConfidence || metrics.syncConfidence >= config.stableSyncConfidence) {
             lastSignalSeenMs = clockMs()
         }
+        if (manualGainControl) {
+            return logAndSnapshot(metrics, plutoGainDb, plutoGainDb, rfState, rfState, "manual gain hold")
+        }
 
         return when (mode) {
             GainControlMode.SCAN -> handleScanMetrics(metrics)
@@ -144,6 +175,7 @@ class GainController(
         return GainControllerSnapshot(
             mode = mode,
             rfFrontendMode = effectiveRfFrontendMode(),
+            manualGainControl = manualGainControl,
             frequencyHz = activeFrequencyHz,
             band = if (external) rfState.band else null,
             muxChannel = if (external) rfState.muxChannel else null,
@@ -258,7 +290,9 @@ class GainController(
 
         if (clockMs() - lastSignalSeenMs > config.signalLostTimeoutMs) {
             mode = GainControlMode.SCAN
-            plutoGainDb = config.scanPlutoGainDb
+            if (!manualGainControl) {
+                plutoGainDb = config.scanPlutoGainDb
+            }
             reason = "signal lost return scan"
             return logAndSnapshot(metrics, beforeGain, plutoGainDb, beforeRf, rfState, reason)
         }

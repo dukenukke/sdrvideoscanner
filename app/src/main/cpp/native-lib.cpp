@@ -144,7 +144,7 @@ bool isLivePlaybackSourceKind(const std::string& sessionKind) {
 
 std::string errorDiagnostic(const std::string& path, const std::string& message) {
     std::ostringstream diagnostic;
-    diagnostic << "CS16 diagnostic\n"
+    diagnostic << "IQ diagnostic\n"
                << "path: " << path << "\n"
                << "error: " << message;
     return diagnostic.str();
@@ -242,14 +242,18 @@ void appendMetadataDiagnostic(std::ostringstream& diagnostic, const sdr::IQMetad
         diagnostic << "\nmetadata duration_sec: unavailable";
     }
 
-    if (!metadata.format.empty() && metadata.format != "CS16" && metadata.format != "cs16") {
-        diagnostic << "\nwarning: metadata format is not CS16; FileSource still reads CS16";
+    if (!metadata.format.empty() &&
+        metadata.format != "CS16" &&
+        metadata.format != "cs16" &&
+        metadata.format != "CS8" &&
+        metadata.format != "cs8") {
+        diagnostic << "\nwarning: metadata format is unsupported; FileSource will default to CS16";
     }
     if (!metadata.endianness.empty() &&
         metadata.endianness != "little" &&
         metadata.endianness != "Little" &&
         metadata.endianness != "LITTLE") {
-        diagnostic << "\nwarning: metadata endianness is not little; FileSource still reads little-endian CS16";
+        diagnostic << "\nwarning: metadata endianness is not little; FileSource reads little-endian IQ";
     }
 }
 
@@ -427,7 +431,7 @@ std::string diagnoseSpectrum(const std::string& filePath, const sdr::IQMetadata&
 
     const auto fftSize = chooseFftSize(readResult.samplesRead);
     std::ostringstream diagnostic;
-    diagnostic << "CS16 spectrum diagnostic\n"
+    diagnostic << "IQ spectrum diagnostic\n"
                << "path: " << filePath << "\n"
                << "sample encoding: " << sampleEncodingName(encoding) << "\n"
                << "samples read: " << readResult.samplesRead;

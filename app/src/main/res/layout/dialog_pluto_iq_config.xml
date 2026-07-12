@@ -18,7 +18,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            android:text="Values are used for Pluto USB, plutorx_ws raw CS8 playback, and IQ capture. Enter raw Hz values."
+            android:text="Values are used for Pluto USB, plutorx_ws raw CS8 playback, and IQ capture. Record IQ always writes CS8. Enter raw Hz values."
             android:textAppearance="?attr/textAppearanceBody2" />
 
         <com.google.android.material.textfield.TextInputLayout
