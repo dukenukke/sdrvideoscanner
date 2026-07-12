@@ -70,7 +70,9 @@ private:
     FrameAssembler frameAssembler_;
     SampleBuffer sampleBuffer_;
     std::vector<float> videoBaseband_;
+    std::vector<float> syncBaseband_;
     std::vector<std::uint8_t> video_;
+    std::vector<std::uint8_t> syncVideo_;
     double fastFieldSampleRemainder_ = 0.0;
     bool fieldStartLocked_ = false;
     std::size_t fieldStartSyncIndex_ = 0;

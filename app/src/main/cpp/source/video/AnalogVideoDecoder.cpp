@@ -122,6 +122,25 @@ std::size_t samplesPerLineAtRate(std::uint64_t sampleRateHz, double lineRateHz) 
             std::max(1.0, std::round(static_cast<double>(sampleRateHz) / lineRateHz)));
 }
 
+double syncLowPassCutoffHz(std::uint64_t sampleRateHz, double configuredCutoffHz) {
+    if (sampleRateHz == 0) {
+        return 0.0;
+    }
+
+    constexpr double kDefaultSyncCutoffHz = 1200000.0;
+    constexpr double kMinimumSyncCutoffHz = 500000.0;
+    constexpr double kMaximumSyncCutoffHz = 1500000.0;
+    const double requested = configuredCutoffHz > 1.0
+            ? configuredCutoffHz
+            : kDefaultSyncCutoffHz;
+    const double boundedForSync = std::clamp(
+            requested,
+            kMinimumSyncCutoffHz,
+            kMaximumSyncCutoffHz);
+    const double nyquistSafeCutoff = static_cast<double>(sampleRateHz) * 0.42;
+    return std::max(1.0, std::min(boundedForSync, nyquistSafeCutoff));
+}
+
 std::size_t applyFrameReadMultiplier(std::size_t sampleCount, double multiplier) {
     if (sampleCount == 0) {
         return 0;
@@ -212,8 +231,18 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
     subtractMean(videoBaseband_);
     timings.meanMs = elapsedMs(meanStart, DecodeClock::now());
 
+    const auto lowPassStart = DecodeClock::now();
+    const auto syncCutoffHz = syncLowPassCutoffHz(videoSampleRateHz, config_.cutoffHz);
+    lowPassFilter_.filter(
+            videoBaseband_,
+            videoSampleRateHz,
+            syncCutoffHz,
+            syncBaseband_);
+    timings.lowPassMs = elapsedMs(lowPassStart, DecodeClock::now());
+
     const auto normalizeStart = DecodeClock::now();
     normalizer_.normalize(videoBaseband_, video_);
+    normalizer_.normalize(syncBaseband_, syncVideo_);
     timings.normalizeMs = elapsedMs(normalizeStart, DecodeClock::now());
 
     const auto maxSyncs = config_.fastFieldPreview
@@ -227,12 +256,12 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
     const auto syncStart = DecodeClock::now();
     const auto syncDetection = config_.fastFieldPreview && !config_.detectFrameSyncInFastPreview
             ? syncDetector_.detectHorizontalSyncsFast(
-                    video_,
+                    syncVideo_,
                     videoSampleRateHz,
                     config_.timing.lineRateHz,
                     maxSyncs)
             : syncDetector_.detectHorizontalSyncs(
-                    video_,
+                    syncVideo_,
                     videoSampleRateHz,
                     config_.timing.lineRateHz,
                     maxSyncs);
@@ -368,6 +397,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             }
         }
         message << "; frame_read_guard_lines=" << frameReadGuardLines()
+                << "; sync_lpf_cutoff_hz=" << syncCutoffHz
                 << timingDiagnostic(
                 timings,
                 sourceSamplesRead,
@@ -404,6 +434,7 @@ VideoFrame AnalogVideoDecoder::decodeOneFrame(ISampleSource& source) {
             << "; sync_score=" << syncDetection.score
             << "; line_stability=" << syncDetection.lineStabilityScore;
     message << "; frame_read_guard_lines=" << frameReadGuardLines()
+            << "; sync_lpf_cutoff_hz=" << syncCutoffHz
             << "; double_image_score=" << frame.doubleImageScore
             << "; assembly_path=" << frame.assemblyPath
             << "; h_sync_missing_rate=" << lastHSyncMissingRate_

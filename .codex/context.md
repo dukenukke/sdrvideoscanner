@@ -21,7 +21,7 @@ From the prior recommended sequence:
 - E: Partially implemented. `SyncDetector` has an FPV-generic frame-sync cluster detector using long sync runs, period scoring, and post-edge blanking score. It is not yet a true PAL/NTSC equalizing/serration template correlator.
 - H: Mostly implemented. Start priority is frame-sync/V first, vertical blanking second, locked start third, full active-window search only when no lock exists.
 - I: Implemented. Active start around a V-edge scans roughly lines 8..40 for first active lines.
-- K: Not implemented. `VideoLowPassFilter` exists but is not applied before normalization/sync.
+- K: Implemented. `AnalogVideoDecoder` now creates a sync-only low-pass path before normalization/sync detection while keeping the unfiltered normalized video for frame assembly/pixels. The sync cutoff is bounded to roughly 0.5-1.5 MHz and lowered automatically below Nyquist at lower analysis rates.
 
 ## Important Finding
 
@@ -62,6 +62,13 @@ Breakpoints worth setting:
 - `FrameAssembler::doubleImageScore`
 
 Caveat: `app/src/main/cpp/CMakeLists.txt` currently applies `-O3` globally, including debug builds. LLDB breakpoints may hit, but stepping/local variables can be unreliable. For serious native debugging, use Debug `-O0 -g` and keep Release optimized.
+
+## Latest Changes
+
+- Fixed sample-domain vertical lock to use the decimated video sample rate for line-length residuals and correction steps.
+- Fixed h_sync_missing_rate to use the decimated video line length.
+- Implemented K as a sync-only LPF path: `videoBaseband_` remains the pixel source, `syncBaseband_`/`syncVideo_` drive `SyncDetector`.
+- Added sync_lpf_cutoff_hz to frame diagnostics.
 
 ## Diagnostics To Watch
 
