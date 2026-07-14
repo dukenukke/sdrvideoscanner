@@ -35,7 +35,7 @@ namespace {
 constexpr std::size_t kDiagnosticBlockSamples = 4096;
 constexpr std::size_t kFilePlaybackReadBlockSamples = 262144;
 constexpr std::size_t kLivePlaybackReadBlockSamples = 32768;
-constexpr std::size_t kPlutoLivePlaybackBufferSamples = 262144;
+constexpr std::size_t kPlutoLivePlaybackBufferSamples = 32768;
 constexpr std::size_t kPlutoLiveSpectrumBufferSamples = 1024;
 constexpr std::size_t kPlutoLiveStreamBlockCount = 4;
 constexpr std::size_t kPlutoCaptureBufferSamples = 32768;
@@ -801,9 +801,7 @@ sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
         const std::string& sessionKind) {
     sdr::AnalogVideoDecoderConfig config;
     config.sampleRateHz = sampleRateHz;
-    const bool isIioCs8Live = sessionKind == "pluto_iio_usb_cs8_live";
-    const bool isCs8Live = sessionKind == "pluto_websocket_cs8_live" ||
-            isIioCs8Live;
+    const bool isCs8Live = sessionKind == "pluto_websocket_cs8_live";
     config.analysisRateHz = isCs8Live
             ? kWebSocketCs8PlaybackAnalysisRateHz
             : kDefaultPlaybackAnalysisRateHz;
@@ -813,7 +811,7 @@ sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
     config.readBlockSamples = isLivePlaybackSourceKind(sessionKind)
             ? kLivePlaybackReadBlockSamples
             : kFilePlaybackReadBlockSamples;
-    config.fastFieldPreview = false;
+    config.fastFieldPreview = true;
     config.detectFrameSyncInFastPreview = true;
     config.fastPreviewFieldStride = 2U;
     config.liveFrameReadMultiplier = 1.0;

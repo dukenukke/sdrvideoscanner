@@ -4,38 +4,9 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
-#include <numeric>
 #include <vector>
 
 namespace sdr {
-namespace {
-
-constexpr std::size_t kMaxLockedFieldPhaseDistanceLines = 6U;
-
-std::size_t fieldPhaseDistanceLines(
-        std::size_t a,
-        std::size_t b,
-        std::size_t fieldLineCount) {
-    auto best = static_cast<std::size_t>(std::abs(
-            static_cast<long long>(a) - static_cast<long long>(b)));
-    if (fieldLineCount > 1U) {
-        best = std::min<std::size_t>(
-                best,
-                static_cast<std::size_t>(std::abs(
-                        static_cast<long long>(a + fieldLineCount) -
-                        static_cast<long long>(b))));
-        if (a >= fieldLineCount) {
-            best = std::min<std::size_t>(
-                    best,
-                    static_cast<std::size_t>(std::abs(
-                            static_cast<long long>(a - fieldLineCount) -
-                            static_cast<long long>(b))));
-        }
-    }
-    return best;
-}
-
-}  // namespace
 
 const char* videoStandardName(VideoStandard standard) {
     switch (standard) {
@@ -67,7 +38,7 @@ VideoTiming timingForStandard(VideoStandard standard) {
             timing.visibleLines = 480;
             timing.interlaced = true;
             timing.frameRateHz = 30000.0 / 1001.0;
-            timing.lineRateHz = timing.frameRateHz * static_cast<double>(timing.totalLines);
+            timing.lineRateHz = 15734.0;
             break;
         case VideoStandard::AUTO:
             timing = timingForStandard(VideoStandard::PAL625_25FPS);
@@ -107,26 +78,8 @@ VideoFrame FrameAssembler::assembleFromSync(
                 frameSyncEdges,
                 activeOffset,
                 samplesPerActiveLine);
-        auto referenceBobFieldStarts = chooseReferenceBobFieldStarts(
-                video,
-                syncStarts,
-                frameSyncEdges,
-                startSyncIndex,
-                sampleRateHz,
-                activeOffset + samplesPerActiveLine);
-        if (referenceBobFieldStarts.size() < interlacedSourceLineCount()) {
-            referenceBobFieldStarts.clear();
-        }
         for (std::uint32_t outputLine = 0; outputLine < frame.height; ++outputLine) {
             const auto fieldLine = outputLine / 2U;
-            const auto sourceLineIndex = static_cast<std::size_t>(fieldLine);
-            if (!referenceBobFieldStarts.empty() &&
-                sourceLineIndex < referenceBobFieldStarts.size()) {
-                const auto lineStart = referenceBobFieldStarts[sourceLineIndex] + activeOffset;
-                copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
-                continue;
-            }
-
             const auto syncIndex = startSyncIndex + static_cast<std::size_t>(fieldLine);
             if (syncIndex >= syncStarts.size()) {
                 break;
@@ -148,12 +101,8 @@ VideoFrame FrameAssembler::assembleFromSync(
         }
     }
 
-    frame.assemblyPath = shouldBobInterlaced()
-            ? "full_sync_bob"
-            : "full_sync";
-    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
-            ? "assembled from detected horizontal sync; frame-sync bounded interlaced bob field preview"
+            ? "assembled from detected horizontal sync; interlaced bob field preview"
             : "assembled from detected horizontal sync";
     return frame;
 }
@@ -179,8 +128,16 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
     const auto lineLengthSamples = samplesPerLine(sampleRateHz);
     const auto activeOffset = activeStartOffset(sampleRateHz);
     const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto sourceLineCount = shouldBobInterlaced() ? interlacedSourceLineCount() : 0U;
-    auto fieldSpanSyncIndices = shouldBobInterlaced()
+    const auto activeEnd = activeOffset + samplesPerActiveLine;
+    const auto referenceFieldStarts = shouldBobInterlaced()
+            ? chooseReferenceBobFieldStarts(
+                    video,
+                    syncStarts,
+                    frameSyncEdges,
+                    sampleRateHz,
+                    activeEnd)
+            : std::vector<std::size_t>{};
+    const auto fieldSpanSyncIndices = referenceFieldStarts.empty() && shouldBobInterlaced()
             ? chooseFieldSpanSyncIndices(
                     video,
                     syncStarts,
@@ -190,56 +147,83 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
                     activeOffset,
                     samplesPerActiveLine)
             : std::vector<std::size_t>{};
-    if (fieldSpanSyncIndices.size() < sourceLineCount) {
-        fieldSpanSyncIndices.clear();
-    }
-    auto referenceBobFieldStarts = shouldBobInterlaced()
-            ? chooseReferenceBobFieldStarts(
-                    video,
-                    syncStarts,
-                    frameSyncEdges,
-                    startSyncIndex,
-                    sampleRateHz,
-                    activeOffset + samplesPerActiveLine)
-            : std::vector<std::size_t>{};
-    if (referenceBobFieldStarts.size() < sourceLineCount) {
-        referenceBobFieldStarts.clear();
-    }
     for (std::uint32_t outputLine = 0; outputLine < frame.height; ++outputLine) {
         const auto sourceLine = shouldBobInterlaced() ? (outputLine / 2U) : outputLine;
-        const auto sourceLineIndex = static_cast<std::size_t>(sourceLine);
-        if (!referenceBobFieldStarts.empty() &&
-            sourceLineIndex < referenceBobFieldStarts.size()) {
-            const auto lineStart = referenceBobFieldStarts[sourceLineIndex] + activeOffset;
-            copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
+        if (!referenceFieldStarts.empty()) {
+            const auto sourceIndex = std::min<std::size_t>(
+                    static_cast<std::size_t>(sourceLine),
+                    referenceFieldStarts.size() - 1U);
+            const auto nextIndex = std::min<std::size_t>(sourceIndex + 1U, referenceFieldStarts.size() - 1U);
+            const auto lineStart = referenceFieldStarts[sourceIndex] + activeOffset;
+            if ((outputLine & 1U) == 0U || nextIndex == sourceIndex) {
+                copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
+            } else {
+                const auto nextLineStart = referenceFieldStarts[nextIndex] + activeOffset;
+                auto* output = frame.pixels.data() + (static_cast<std::size_t>(outputLine) * frame.width);
+                const auto availableA = lineStart < video.size()
+                        ? std::min(samplesPerActiveLine, video.size() - lineStart)
+                        : 0U;
+                const auto availableB = nextLineStart < video.size()
+                        ? std::min(samplesPerActiveLine, video.size() - nextLineStart)
+                        : 0U;
+                if (availableA == 0U || availableB == 0U) {
+                    continue;
+                }
+                if (frame.width == 1U || availableA == 1U || availableB == 1U) {
+                    const auto value = static_cast<std::uint8_t>(
+                            (static_cast<unsigned>(video[lineStart]) +
+                             static_cast<unsigned>(video[nextLineStart])) /
+                            2U);
+                    std::fill(output, output + frame.width, value);
+                    continue;
+                }
+                const double scaleA = static_cast<double>(availableA - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                const double scaleB = static_cast<double>(availableB - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                for (std::uint32_t x = 0; x < frame.width; ++x) {
+                    const double sourcePositionA = static_cast<double>(x) * scaleA;
+                    const auto leftA = static_cast<std::size_t>(sourcePositionA);
+                    const auto rightA = std::min<std::size_t>(leftA + 1U, availableA - 1U);
+                    const double fractionA = sourcePositionA - static_cast<double>(leftA);
+                    const double valueA =
+                            (static_cast<double>(video[lineStart + leftA]) * (1.0 - fractionA)) +
+                            (static_cast<double>(video[lineStart + rightA]) * fractionA);
+
+                    const double sourcePositionB = static_cast<double>(x) * scaleB;
+                    const auto leftB = static_cast<std::size_t>(sourcePositionB);
+                    const auto rightB = std::min<std::size_t>(leftB + 1U, availableB - 1U);
+                    const double fractionB = sourcePositionB - static_cast<double>(leftB);
+                    const double valueB =
+                            (static_cast<double>(video[nextLineStart + leftB]) * (1.0 - fractionB)) +
+                            (static_cast<double>(video[nextLineStart + rightB]) * fractionB);
+
+                    output[x] = static_cast<std::uint8_t>(
+                            std::clamp((valueA + valueB) * 0.5, 0.0, 255.0) + 0.5);
+                }
+            }
             continue;
         }
 
-        const auto syncIndex = !fieldSpanSyncIndices.empty() &&
-                        sourceLineIndex < fieldSpanSyncIndices.size()
-                ? fieldSpanSyncIndices[sourceLineIndex]
-                : startSyncIndex + sourceLineIndex;
+        const auto syncIndex = !fieldSpanSyncIndices.empty()
+                ? fieldSpanSyncIndices[std::min<std::size_t>(
+                        static_cast<std::size_t>(sourceLine),
+                        fieldSpanSyncIndices.size() - 1U)]
+                : startSyncIndex + static_cast<std::size_t>(sourceLine);
         if (syncIndex >= syncStarts.size()) {
             break;
         }
+
         const auto lineStart = syncStarts[syncIndex] + activeOffset;
         copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
     }
 
-    frame.assemblyPath = shouldBobInterlaced()
-            ? (!referenceBobFieldStarts.empty()
-                    ? "pll"
-                    : !fieldSpanSyncIndices.empty()
-                    ? "span"
-                    : "sequential")
-            : "fast_preview";
-    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
-            ? (!referenceBobFieldStarts.empty()
-                    ? "field preview from frame-sync bounded line PLL; interlaced bob"
+            ? (!referenceFieldStarts.empty()
+                    ? "fast playback field preview from reference frame-sync spans; interlaced bob"
                     : !fieldSpanSyncIndices.empty()
-                    ? "field preview from bounded frame-sync span; interlaced bob"
-                    : "field preview from locked horizontal sync; interlaced bob")
+                    ? "fast playback field preview from bounded frame-sync span; interlaced bob"
+                    : "fast playback field preview from horizontal sync; interlaced bob")
             : "fast playback frame preview from horizontal sync";
     return frame;
 }
@@ -248,9 +232,7 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
         const std::vector<std::uint8_t>& video,
         const std::vector<std::size_t>& syncStarts,
         const std::vector<std::size_t>& frameSyncEdges,
-        std::uint64_t sampleRateHz,
-        std::size_t lockedStartSyncIndex,
-        bool hasLockedStart) const {
+        std::uint64_t sampleRateHz) const {
     if (!shouldBobInterlaced()) {
         return 0;
     }
@@ -258,14 +240,6 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
     const auto lineLengthSamples = samplesPerLine(sampleRateHz);
     const auto activeOffset = activeStartOffset(sampleRateHz);
     const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto sourceLineCount = interlacedSourceLineCount();
-    const auto maxUsableStart = syncStarts.size() > sourceLineCount
-            ? syncStarts.size() - sourceLineCount
-            : 0U;
-    const auto boundedLockedStart = std::min(lockedStartSyncIndex, maxUsableStart);
-    const auto fieldLineCount = static_cast<std::size_t>(
-            std::max(1.0, std::round(timing_.lineRateHz / (timing_.frameRateHz * 2.0))));
-
     const auto frameSyncStart = chooseInterlacedStartFromFrameSync(
             video,
             syncStarts,
@@ -285,57 +259,12 @@ std::size_t FrameAssembler::chooseFieldPreviewStartSyncIndex(
         return verticalBlankingStart;
     }
 
-    if (hasLockedStart) {
-        return boundedLockedStart;
-    }
-
-    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
-            video,
-            syncStarts,
-            activeOffset,
-            samplesPerActiveLine);
-    if (activeWindowStart != static_cast<std::size_t>(-1)) {
-        return activeWindowStart;
-    }
-
     return chooseInterlacedStartSyncIndex(
             video,
             syncStarts,
             frameSyncEdges,
             activeOffset,
             samplesPerActiveLine);
-}
-
-std::size_t FrameAssembler::chooseFieldPreviewStartFromFrameSyncEdge(
-        const std::vector<std::uint8_t>& video,
-        const std::vector<std::size_t>& syncStarts,
-        std::size_t frameSyncEdge,
-        std::uint64_t sampleRateHz) const {
-    if (!shouldBobInterlaced() || syncStarts.empty()) {
-        return static_cast<std::size_t>(-1);
-    }
-
-    const auto lineLengthSamples = samplesPerLine(sampleRateHz);
-    const auto activeOffset = activeStartOffset(sampleRateHz);
-    const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto sourceLineCount = interlacedSourceLineCount();
-    const auto maxUsableStart = syncStarts.size() > sourceLineCount
-            ? syncStarts.size() - sourceLineCount
-            : 0U;
-    const auto targetSync = std::lower_bound(syncStarts.begin(), syncStarts.end(), frameSyncEdge);
-    if (targetSync == syncStarts.end()) {
-        return static_cast<std::size_t>(-1);
-    }
-
-    const auto edgeSyncIndex = static_cast<std::size_t>(
-            std::distance(syncStarts.begin(), targetSync));
-    return chooseActiveStartNearFieldSync(
-            video,
-            syncStarts,
-            edgeSyncIndex,
-            activeOffset,
-            samplesPerActiveLine,
-            maxUsableStart);
 }
 
 VideoFrame FrameAssembler::assembleRawRaster(
@@ -364,8 +293,6 @@ VideoFrame FrameAssembler::assembleRawRaster(
         copyResampledLine(video, lineStart, lineLengthSamples, frame, outputLine);
     }
 
-    frame.assemblyPath = "raw";
-    frame.doubleImageScore = doubleImageScore(frame);
     frame.message = shouldBobInterlaced()
             ? "raw standard-timed raster fallback; interlaced bob field preview"
             : "raw standard-timed raster fallback";
@@ -417,31 +344,9 @@ std::size_t FrameAssembler::chooseInterlacedStartSyncIndex(
         return frameSyncStart;
     }
 
-    const auto activeWindowStart = chooseInterlacedStartFromActiveWindow(
-            video,
-            syncStarts,
-            activeOffset,
-            samplesPerActiveLine);
-    if (activeWindowStart != static_cast<std::size_t>(-1)) {
-        return activeWindowStart;
-    }
-
-    return 0;
-}
-
-std::size_t FrameAssembler::chooseInterlacedStartFromActiveWindow(
-        const std::vector<std::uint8_t>& video,
-        const std::vector<std::size_t>& syncStarts,
-        std::size_t activeOffset,
-        std::size_t samplesPerActiveLine) const {
-    const auto sourceLineCount = interlacedSourceLineCount();
-    if (!shouldBobInterlaced() || sourceLineCount == 0 || syncStarts.empty()) {
-        return static_cast<std::size_t>(-1);
-    }
-
     const auto requiredSyncSpan = sourceLineCount - 1U;
     if (syncStarts.size() <= requiredSyncSpan) {
-        return static_cast<std::size_t>(-1);
+        return 0;
     }
 
     std::size_t bestStart = 0;
@@ -500,8 +405,6 @@ std::size_t FrameAssembler::chooseInterlacedStartFromFrameSync(
     const auto maxUsableStart = syncStarts.size() > sourceLineCount
             ? syncStarts.size() - sourceLineCount
             : 0U;
-    const auto fieldLineCount = static_cast<std::size_t>(
-            std::max(1.0, std::round(timing_.lineRateHz / (timing_.frameRateHz * 2.0))));
     auto bestStart = static_cast<std::size_t>(-1);
     double bestScore = -1.0;
     for (const auto frameEdge : frameSyncEdges) {
@@ -519,11 +422,6 @@ std::size_t FrameAssembler::chooseInterlacedStartFromFrameSync(
                 samplesPerActiveLine,
                 maxUsableStart);
         if (candidate == static_cast<std::size_t>(-1)) {
-            continue;
-        }
-        if (bestStart != static_cast<std::size_t>(-1) &&
-            fieldLineCount > 1U &&
-            fieldPhaseDistanceLines(candidate, bestStart, fieldLineCount) > 8U) {
             continue;
         }
 
@@ -594,7 +492,7 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
         std::size_t activeOffset,
         std::size_t samplesPerActiveLine) const {
     std::vector<std::size_t> bestIndices;
-    if (!shouldBobInterlaced() || syncStarts.empty() || frameSyncEdges.empty()) {
+    if (!shouldBobInterlaced() || syncStarts.empty() || frameSyncEdges.size() < 2U) {
         return bestIndices;
     }
 
@@ -607,17 +505,10 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
             static_cast<std::size_t>(std::round(static_cast<double>(sourceLineCount) * 0.85)));
 
     auto bestPhaseDistance = static_cast<std::size_t>(-1);
-    for (std::size_t span = 0; span < frameSyncEdges.size(); ++span) {
+    for (std::size_t span = 0; span + 1U < frameSyncEdges.size(); ++span) {
         const auto spanStart = frameSyncEdges[span];
-        const auto spanEnd = span + 1U < frameSyncEdges.size()
-                ? frameSyncEdges[span + 1U]
-                : spanStart + static_cast<std::size_t>(
-                        std::round(static_cast<double>(fieldLineCount) *
-                                   static_cast<double>(lineLengthSamples)));
+        const auto spanEnd = frameSyncEdges[span + 1U];
         if (spanEnd <= spanStart + lineLengthSamples) {
-            continue;
-        }
-        if (spanEnd > video.size()) {
             continue;
         }
 
@@ -690,9 +581,6 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
                                 static_cast<long long>(preferredStartSyncIndex))));
             }
         }
-        if (phaseDistance > kMaxLockedFieldPhaseDistanceLines) {
-            continue;
-        }
 
         const bool betterPhase = phaseDistance < bestPhaseDistance;
         const bool closePhaseAndMoreLines =
@@ -710,7 +598,6 @@ std::vector<std::size_t> FrameAssembler::chooseReferenceBobFieldStarts(
         const std::vector<std::uint8_t>& video,
         const std::vector<std::size_t>& syncStarts,
         const std::vector<std::size_t>& frameSyncEdges,
-        std::size_t preferredStartSyncIndex,
         std::uint64_t sampleRateHz,
         std::size_t activeEnd) const {
     std::vector<std::size_t> empty;
@@ -726,96 +613,64 @@ std::vector<std::size_t> FrameAssembler::chooseReferenceBobFieldStarts(
         return empty;
     }
 
-    const auto roundedFieldLineCount = static_cast<std::size_t>(
-            std::max(1.0, std::round(fieldLineCount)));
     const auto fieldVbiSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 18U : 10U);
-    const auto wantedRows = static_cast<std::size_t>(timing_.visibleLines / 2U);
-    const auto minimumRows = std::max<std::size_t>(
-            40U,
-            static_cast<std::size_t>(std::round(static_cast<double>(wantedRows) * 0.70)));
-    const auto boundedPreferredStartSyncIndex = std::min(
-            preferredStartSyncIndex,
-            syncStarts.size() - 1U);
-
-    std::vector<std::size_t> bestStarts;
-    auto bestPhaseDistance = static_cast<std::size_t>(-1);
-    double bestQuality = -1.0;
-    for (std::size_t span = 0; span + 1U < frameSyncEdges.size(); ++span) {
-        const auto spanStart = frameSyncEdges[span];
-        const auto spanEnd = frameSyncEdges[span + 1U];
-        if (spanEnd <= spanStart || spanEnd > video.size()) {
-            continue;
-        }
-
-        const auto spanLines =
-                static_cast<double>(spanEnd - spanStart) / static_cast<double>(lineLengthSamples);
-        if (spanLines < fieldLineCount * 0.70 || spanLines > fieldLineCount * 1.30) {
-            continue;
-        }
-
-        double quality = 0.0;
-        auto starts = lineStartsInSpan(
-                video,
-                syncStarts,
-                static_cast<double>(lineLengthSamples),
-                activeEnd,
-                spanStart,
-                spanEnd,
-                fieldVbiSkip,
-                quality);
-        if (starts.size() < minimumRows) {
-            continue;
-        }
-
-        const auto firstSync = std::lower_bound(syncStarts.begin(), syncStarts.end(), starts.front());
-        if (firstSync == syncStarts.end()) {
-            continue;
-        }
-
-        const auto firstSyncIndex = static_cast<std::size_t>(
-                std::distance(syncStarts.begin(), firstSync));
-        auto phaseDistance = static_cast<std::size_t>(std::abs(
-                static_cast<long long>(firstSyncIndex) -
-                static_cast<long long>(boundedPreferredStartSyncIndex)));
-        const auto shiftedForward = firstSyncIndex + roundedFieldLineCount;
-        phaseDistance = std::min<std::size_t>(
-                phaseDistance,
-                static_cast<std::size_t>(std::abs(
-                        static_cast<long long>(shiftedForward) -
-                        static_cast<long long>(boundedPreferredStartSyncIndex))));
-        if (firstSyncIndex >= roundedFieldLineCount) {
-            const auto shiftedBackward = firstSyncIndex - roundedFieldLineCount;
-            phaseDistance = std::min<std::size_t>(
-                    phaseDistance,
-                    static_cast<std::size_t>(std::abs(
-                        static_cast<long long>(shiftedBackward) -
-                        static_cast<long long>(boundedPreferredStartSyncIndex))));
-        }
-        if (phaseDistance > kMaxLockedFieldPhaseDistanceLines) {
-            continue;
-        }
-
-        const bool betterPhase = phaseDistance < bestPhaseDistance;
-        const bool samePhaseBetterQuality =
-                phaseDistance == bestPhaseDistance && quality > bestQuality;
-        const bool closePhaseMoreRows =
-                phaseDistance <= bestPhaseDistance + 1U &&
-                starts.size() > bestStarts.size() &&
-                quality >= bestQuality * 0.85;
-        if (bestStarts.empty() || betterPhase || samePhaseBetterQuality || closePhaseMoreRows) {
-            bestPhaseDistance = phaseDistance;
-            bestQuality = quality;
-            bestStarts = std::move(starts);
-        }
-    }
-
-    if (bestStarts.empty()) {
+    const auto latestStart = frameSyncEdges[frameSyncEdges.size() - 2U];
+    const auto latestEnd = frameSyncEdges[frameSyncEdges.size() - 1U];
+    if (latestEnd <= latestStart || latestEnd > video.size()) {
         return empty;
     }
-    if (bestStarts.size() > wantedRows) {
-        bestStarts.resize(wantedRows);
+    const auto latestSpanLines =
+            static_cast<double>(latestEnd - latestStart) / static_cast<double>(lineLengthSamples);
+    if (latestSpanLines < fieldLineCount * 0.70 || latestSpanLines > fieldLineCount * 1.30) {
+        return empty;
     }
-    return bestStarts;
+
+    double latestQuality = 0.0;
+    auto latestStarts = lineStartsInSpan(
+            video,
+            syncStarts,
+            static_cast<double>(lineLengthSamples),
+            activeEnd,
+            latestStart,
+            latestEnd,
+            fieldVbiSkip,
+            latestQuality);
+    if (latestStarts.size() < 40U) {
+        return empty;
+    }
+
+    if (frameSyncEdges.size() >= 4U) {
+        const auto previousStart = frameSyncEdges[frameSyncEdges.size() - 3U];
+        const auto previousEnd = frameSyncEdges[frameSyncEdges.size() - 2U];
+        const auto previousSpanLines =
+                previousEnd > previousStart
+                        ? static_cast<double>(previousEnd - previousStart) /
+                                  static_cast<double>(lineLengthSamples)
+                        : 0.0;
+        if (previousSpanLines >= fieldLineCount * 0.70 &&
+            previousSpanLines <= fieldLineCount * 1.30) {
+            double previousQuality = 0.0;
+            auto previousStarts = lineStartsInSpan(
+                    video,
+                    syncStarts,
+                    static_cast<double>(lineLengthSamples),
+                    activeEnd,
+                    previousStart,
+                    previousEnd,
+                    fieldVbiSkip,
+                    previousQuality);
+            if (previousStarts.size() >= 40U &&
+                !(latestQuality >= 0.75 || latestQuality >= previousQuality * 0.9)) {
+                latestStarts = std::move(previousStarts);
+            }
+        }
+    }
+
+    const auto wantedRows = static_cast<std::size_t>(timing_.visibleLines / 2U);
+    if (latestStarts.size() > wantedRows) {
+        latestStarts.resize(wantedRows);
+    }
+    return latestStarts;
 }
 
 std::vector<std::size_t> FrameAssembler::lineStartsInSpan(
@@ -900,129 +755,6 @@ std::vector<std::size_t> FrameAssembler::lineStartsInSpan(
     return starts;
 }
 
-double FrameAssembler::doubleImageScore(const VideoFrame& frame) const {
-    if (!frame.valid() || frame.height < 80U || frame.width < 16U) {
-        return 0.0;
-    }
-
-    const auto height = static_cast<std::size_t>(frame.height);
-    const auto width = static_cast<std::size_t>(frame.width);
-    std::vector<double> rowMeans(height, 0.0);
-    std::vector<double> rowActivities(height, 0.0);
-    for (std::size_t y = 0; y < height; ++y) {
-        const auto* row = frame.pixels.data() + (y * width);
-        double sum = 0.0;
-        double activity = 0.0;
-        for (std::size_t x = 0; x < width; ++x) {
-            sum += static_cast<double>(row[x]);
-            if (x > 0U) {
-                activity += std::fabs(static_cast<double>(row[x]) - static_cast<double>(row[x - 1U]));
-            }
-        }
-        rowMeans[y] = sum / static_cast<double>(width);
-        rowActivities[y] = activity / static_cast<double>(std::max<std::size_t>(1U, width - 1U));
-    }
-
-    const double mean = std::accumulate(rowMeans.begin(), rowMeans.end(), 0.0) /
-            static_cast<double>(rowMeans.size());
-    double variance = 0.0;
-    for (const auto value : rowMeans) {
-        const double centered = value - mean;
-        variance += centered * centered;
-    }
-    variance = std::max(variance, 1.0);
-
-    double bestCorrelation = 0.0;
-    const auto minLag = static_cast<std::size_t>(std::round(static_cast<double>(height) * 0.40));
-    const auto maxLag = static_cast<std::size_t>(std::round(static_cast<double>(height) * 0.60));
-    for (std::size_t lag = minLag; lag <= maxLag && lag + 8U < height; ++lag) {
-        double numerator = 0.0;
-        double leftEnergy = 0.0;
-        double rightEnergy = 0.0;
-        for (std::size_t y = 0; y + lag < height; ++y) {
-            const double left = rowMeans[y] - mean;
-            const double right = rowMeans[y + lag] - mean;
-            numerator += left * right;
-            leftEnergy += left * left;
-            rightEnergy += right * right;
-        }
-        const double denominator = std::sqrt(std::max(1.0, leftEnergy * rightEnergy));
-        bestCorrelation = std::max(bestCorrelation, numerator / denominator);
-    }
-
-    constexpr std::size_t kBand = 8U;
-    const auto mid = height / 2U;
-    const auto beforeStart = mid > (kBand * 2U) ? mid - (kBand * 2U) : 0U;
-    const auto beforeEnd = mid > kBand ? mid - kBand : mid;
-    const auto afterStart = std::min(height, mid + kBand);
-    const auto afterEnd = std::min(height, mid + (kBand * 2U));
-    auto averageRange = [](const std::vector<double>& values, std::size_t start, std::size_t end) {
-        if (start >= end || start >= values.size()) {
-            return 0.0;
-        }
-        end = std::min(end, values.size());
-        return std::accumulate(values.begin() + static_cast<std::ptrdiff_t>(start),
-                               values.begin() + static_cast<std::ptrdiff_t>(end),
-                               0.0) /
-                static_cast<double>(end - start);
-    };
-    const double midMeanJump = std::fabs(
-            averageRange(rowMeans, beforeStart, beforeEnd) -
-            averageRange(rowMeans, afterStart, afterEnd));
-    const double midActivityJump = std::fabs(
-            averageRange(rowActivities, beforeStart, beforeEnd) -
-            averageRange(rowActivities, afterStart, afterEnd));
-
-    auto sortedMeans = rowMeans;
-    std::sort(sortedMeans.begin(), sortedMeans.end());
-    const double lowMean = sortedMeans[sortedMeans.size() / 5U];
-    const double medianMean = sortedMeans[sortedMeans.size() / 2U];
-    const double darkThreshold = lowMean + ((medianMean - lowMean) * 0.35);
-    std::size_t darkToBrightTransitions = 0;
-    std::size_t centralDarkRuns = 0;
-    bool inDarkRun = false;
-    std::size_t darkRunLength = 0;
-    std::size_t runStart = 0;
-    for (std::size_t y = 0; y < rowMeans.size(); ++y) {
-        const auto value = rowMeans[y];
-        const bool dark = value <= darkThreshold;
-        if (dark) {
-            if (!inDarkRun) {
-                runStart = y;
-            }
-            inDarkRun = true;
-            ++darkRunLength;
-            continue;
-        }
-        if (inDarkRun && darkRunLength >= 3U) {
-            ++darkToBrightTransitions;
-            const auto runCenter = runStart + (darkRunLength / 2U);
-            if (runCenter > height / 8U && runCenter < (height * 7U) / 8U) {
-                ++centralDarkRuns;
-            }
-        }
-        inDarkRun = false;
-        darkRunLength = 0;
-    }
-    if (inDarkRun && darkRunLength >= 3U) {
-        const auto runCenter = runStart + (darkRunLength / 2U);
-        if (runCenter > height / 8U && runCenter < (height * 7U) / 8U) {
-            ++centralDarkRuns;
-        }
-    }
-
-    const double correlationScore = std::max(0.0, bestCorrelation - 0.45) * 150.0;
-    const double discontinuityScore = std::clamp((midMeanJump - 12.0) * 1.8, 0.0, 40.0) +
-            std::clamp((midActivityJump - 3.0) * 1.5, 0.0, 25.0);
-    const double transitionScore = darkToBrightTransitions > 1U
-            ? std::min(45.0, static_cast<double>(darkToBrightTransitions - 1U) * 24.0)
-            : 0.0;
-    const double centralBandScore = centralDarkRuns > 0U
-            ? std::min(45.0, static_cast<double>(centralDarkRuns) * 24.0)
-            : 0.0;
-    return std::clamp(correlationScore + discontinuityScore + transitionScore + centralBandScore, 0.0, 100.0);
-}
-
 std::size_t FrameAssembler::findBestSyncNearPrediction(
         const std::vector<std::size_t>& syncStarts,
         double prediction,
@@ -1055,59 +787,16 @@ std::size_t FrameAssembler::chooseActiveStartNearFieldSync(
         return static_cast<std::size_t>(-1);
     }
 
-    constexpr std::size_t kMinSkip = 8U;
-    constexpr std::size_t kMaxSkip = 40U;
-    constexpr std::size_t kBlankingProbeLines = 6U;
-    const auto searchStart = std::min(edgeSyncIndex + kMinSkip, maxUsableStart);
-    const auto searchEnd = std::min(edgeSyncIndex + kMaxSkip, maxUsableStart);
+    const auto nominalSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 22U : 19U);
+    const auto minSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 14U : 8U);
+    const auto maxSkip = static_cast<std::size_t>(timing_.totalLines > 560 ? 36U : 32U);
+    const auto searchStart = std::min(edgeSyncIndex + minSkip, maxUsableStart);
+    const auto searchEnd = std::min(edgeSyncIndex + maxSkip, maxUsableStart);
     if (searchStart > searchEnd) {
         return static_cast<std::size_t>(-1);
     }
 
-    std::vector<double> searchActivities;
-    searchActivities.reserve(searchEnd - searchStart + 1U);
-    double blankingActivitySum = 0.0;
-    std::size_t blankingActivityCount = 0;
-    const auto blankingStart = std::min(edgeSyncIndex + 2U, maxUsableStart);
-    const auto blankingEnd = std::min(edgeSyncIndex + 2U + kBlankingProbeLines, maxUsableStart);
-    for (std::size_t probe = blankingStart; probe <= blankingEnd && probe < syncStarts.size(); ++probe) {
-        const auto lineStart = syncStarts[probe] + activeOffset;
-        blankingActivitySum += lineActivity(video, lineStart, samplesPerActiveLine);
-        ++blankingActivityCount;
-    }
-
-    for (std::size_t candidate = searchStart; candidate <= searchEnd; ++candidate) {
-        const auto lineStart = syncStarts[candidate] + activeOffset;
-        searchActivities.push_back(lineActivity(video, lineStart, samplesPerActiveLine));
-    }
-    if (searchActivities.empty()) {
-        return static_cast<std::size_t>(-1);
-    }
-    auto sortedActivities = searchActivities;
-    std::sort(sortedActivities.begin(), sortedActivities.end());
-    const double lowActivity = sortedActivities[sortedActivities.size() / 5U];
-    const double medianActivity = sortedActivities[sortedActivities.size() / 2U];
-    const double blankingActivity = blankingActivityCount == 0
-            ? lowActivity
-            : blankingActivitySum / static_cast<double>(blankingActivityCount);
-    const double activeThreshold = std::max(
-            blankingActivity * 2.4,
-            lowActivity + ((medianActivity - lowActivity) * 0.35));
-
-    for (std::size_t candidate = searchStart; candidate + 2U <= searchEnd; ++candidate) {
-        std::size_t activeLines = 0;
-        for (std::size_t offset = 0; offset < 3U; ++offset) {
-            const auto lineStart = syncStarts[candidate + offset] + activeOffset;
-            if (lineActivity(video, lineStart, samplesPerActiveLine) >= activeThreshold) {
-                ++activeLines;
-            }
-        }
-        if (activeLines >= 2U) {
-            return candidate;
-        }
-    }
-
-    const auto nominalStart = std::min(edgeSyncIndex + (timing_.totalLines > 560 ? 22U : 19U), maxUsableStart);
+    const auto nominalStart = std::min(edgeSyncIndex + nominalSkip, maxUsableStart);
     std::size_t bestStart = static_cast<std::size_t>(-1);
     double bestScore = -1.0;
     for (std::size_t candidate = searchStart; candidate <= searchEnd; ++candidate) {

@@ -48,14 +48,6 @@ public:
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,
             const std::vector<std::size_t>& frameSyncEdges,
-            std::uint64_t sampleRateHz,
-            std::size_t lockedStartSyncIndex,
-            bool hasLockedStart) const;
-
-    std::size_t chooseFieldPreviewStartFromFrameSyncEdge(
-            const std::vector<std::uint8_t>& video,
-            const std::vector<std::size_t>& syncStarts,
-            std::size_t frameSyncEdge,
             std::uint64_t sampleRateHz) const;
 
     VideoFrame assembleRawRaster(
@@ -71,11 +63,6 @@ private:
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,
             const std::vector<std::size_t>& frameSyncEdges,
-            std::size_t activeOffset,
-            std::size_t samplesPerActiveLine) const;
-    std::size_t chooseInterlacedStartFromActiveWindow(
-            const std::vector<std::uint8_t>& video,
-            const std::vector<std::size_t>& syncStarts,
             std::size_t activeOffset,
             std::size_t samplesPerActiveLine) const;
     std::size_t chooseInterlacedStartFromFrameSync(
@@ -101,7 +88,6 @@ private:
             const std::vector<std::uint8_t>& video,
             const std::vector<std::size_t>& syncStarts,
             const std::vector<std::size_t>& frameSyncEdges,
-            std::size_t preferredStartSyncIndex,
             std::uint64_t sampleRateHz,
             std::size_t activeEnd) const;
     std::vector<std::size_t> lineStartsInSpan(
@@ -113,7 +99,6 @@ private:
             std::size_t spanEnd,
             std::size_t vbiLines,
             double& quality) const;
-    double doubleImageScore(const VideoFrame& frame) const;
     std::size_t findBestSyncNearPrediction(
             const std::vector<std::size_t>& syncStarts,
             double prediction,

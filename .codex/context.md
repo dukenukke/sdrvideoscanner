@@ -1,97 +1,240 @@
-# SDRVideoScanner Debug Context
+﻿# SDRVideoScanner Debug Context
 
-Current focus: unstable analog FPV frame syncing using CS8 IQ samples captured by the application. The intent is to debug deterministically from `FileSource` replay while keeping the live Pluto/WebSocket pipeline using the same decoder path.
+Date saved: 2026-07-12
+Branch: `feature/adaptive_gain__control`
+Workspace: `D:\Projects\DroneDetector\CODE\SDRVideoScanner`
 
-## Development Rules In Effect
+## Current Goal
 
-- `native-lib.cpp` should remain a thin JNI/session wrapper.
-- DSP and decoder logic belongs in reusable C++17 blocks under `app/src/main/cpp/source/...`.
-- IQ sources implement `ISampleSource`; `FileSource` is the reference deterministic replay source.
-- Decoder must not know where IQ samples originate.
-- Avoid dynamic allocation in the real-time loop where practical; reuse buffers.
-- Do not change project directory structure without approval.
+Port the rock-solid frame sync behavior from `feature/cs8_iq_scan` into `feature/adaptive_gain__control`, while preserving the project architecture:
 
-## Frame Sync Enhancement Status
+- Decoder must stay source-agnostic.
+- IQ sources must feed the same decoder through `ISampleSource`.
+- Kotlin only chooses/configures the source and calls JNI.
+- `native-lib.cpp` should remain session/JNI glue, not DSP business logic.
 
-From the prior recommended sequence:
+## Current Status
 
-- D: Sample-domain vertical lock is mostly implemented in `AnalogVideoDecoder` via `lockedActiveStartSample_`, `pendingActiveStartSample_`, `videoSampleCursor_`, and nearest-H-sync mapping only for frame assembly.
-- F: Multi-field/double-image rejection is implemented via `FrameAssembler::doubleImageScore`, alternate start candidates, preserved-lock fallback, and sequential bad-frame rejection.
-- G: Soft vertical tracking is implemented: <=2 lines hold, 3-12 lines move 1 line/frame, >12 lines relock after 3 stable candidates.
-- E: Partially implemented. `SyncDetector` has an FPV-generic frame-sync cluster detector using long sync runs, period scoring, and post-edge blanking score. It is not yet a true PAL/NTSC equalizing/serration template correlator.
-- H: Mostly implemented. Start priority is frame-sync/V first, vertical blanking second, locked start third, full active-window search only when no lock exists.
-- I: Implemented. Active start around a V-edge scans roughly lines 8..40 for first active lines.
-- K: Implemented. `AnalogVideoDecoder` now creates a sync-only low-pass path before normalization/sync detection while keeping the unfiltered normalized video for frame assembly/pixels. The sync cutoff is bounded to roughly 0.5-1.5 MHz and lowered automatically below Nyquist at lower analysis rates.
+- WebSocket CS8 path works fine after restoring the known-good decoder mode.
+- IIO path was still vertically broken in the user's last test before the final IIO-specific patch.
+- IIO-specific patch has been applied and builds, but has not yet been runtime-validated by the user.
 
-## Important Finding
+Expected next runtime check for IIO:
 
-Likely bug: `AnalogVideoDecoder::sampleLockedFieldStartSyncIndex()` works in decimated video-sample coordinates (`video_`, `syncStarts`, `frameSyncEdges`, `videoSampleCursor_`), but calls `samplesPerLine()`, which currently returns input-IQ-rate samples from `config_.sampleRateHz`.
+- `decoder_mode=fast_field_preview`
+- `playback_source=pluto_iio_usb_cs8_live`
+- `timing_video_sample_rate_hz` should be around `1562500` for 25 MHz input, not `12500000`.
 
-This is wrong when CS8 file playback decimates high-rate captures to the default analysis rate (for example 10 MHz -> 1.5 MHz path). Residual thresholds and one-line correction steps become too large by the decimation factor. This can make vertical lock sticky/jumpy even though D/F/G are present.
+If IIO is still broken, capture the frame diagnostic text/panel from one bad IIO frame and compare these fields against WebSocket:
 
-Fix direction: compute the line length inside sample-domain vertical tracking from `videoSampleRateHz / timing.lineRateHz`, or add a helper that accepts the effective video sample rate. Keep diagnostics in video-sample units unless explicitly converted.
+- `decoder_mode`
+- `playback_source`
+- `timing_video_sample_rate_hz`
+- `timing_decimation`
+- `syncs`
+- `frame_sync_edges`
+- `sync_score`
+- `line_stability`
+- `field_start_sync`
+- `field_start_candidate`
+- `field_start_locked`
 
-## Useful Files
+## Important User Correction
+
+The user explicitly corrected the direction:
+
+> Port the video decoder algorithm, not the WebSocket source.
+
+So WebSocket/IIO selection is only source selection for the same decoder algorithm. Do not couple decoder behavior to WebSocket directly except where native session config already identifies source kind for analysis-rate/read-block settings.
+
+## Major Changes Made Today
+
+### 1. Stable Decoder Algorithm Port
+
+Replaced the experimental vertical-lock/ring/timeline decoder implementation with the simpler known-good implementation from `feature/cs8_iq_scan`:
 
 - `app/src/main/cpp/source/video/AnalogVideoDecoder.cpp`
 - `app/src/main/cpp/source/video/AnalogVideoDecoder.h`
 - `app/src/main/cpp/source/video/FrameAssembler.cpp`
+- `app/src/main/cpp/source/video/FrameAssembler.h`
 - `app/src/main/cpp/source/video/SyncDetector.cpp`
-- `app/src/main/cpp/source/video/VideoLowPassFilter.cpp`
-- `app/src/main/cpp/source/file/FileSource.cpp`
+- `app/src/main/cpp/source/video/SyncDetector.h`
+
+Compatibility retained:
+
+- `AnalogVideoDecoderConfig::liveFrameReadMultiplier` was kept because adaptive `native-lib.cpp` still assigns it.
+- `VideoFrame` still contains `doubleImageScore` and `assemblyPath` because adaptive native diagnostics print them. They are effectively compatibility/no-op for the stable decoder path unless filled elsewhere.
+
+### 2. Restored Known-Good Decoder Mode
+
+Root cause of both WebSocket and IIO being broken after the first port:
+
+- `native-lib.cpp` was configuring playback/probe sessions with `config.fastFieldPreview = false`.
+- The known-good branch used `fastFieldPreview = true`.
+
+Current state:
+
 - `app/src/main/cpp/native-lib.cpp`
+- `makePlaybackDecoderConfig(...)`
+- `config.fastFieldPreview = true`
+- `config.detectFrameSyncInFastPreview = true`
+- `config.fastPreviewFieldStride = 2U`
+
+After this patch, user reported WebSocket works fine.
+
+### 3. IQ Source Selection Added
+
+Setup IQ dialog now has source selection:
+
+- `IIO`
+- `WebSocket`
+
+Files:
+
+- `app/src/main/res/layout/dialog_pluto_iq_config.xml`
 - `app/src/main/java/com/example/sdrvideoscanner/MainActivity.kt`
 
-## Debugging From IDE
+Added:
 
-CS8 replay through Android Studio is possible and preferred for this issue.
+- `PlutoIqSource` enum with `IIO` and `WEBSOCKET`.
+- `PlutoIqConfig.iqSource`.
+- Preference key `PREF_IQ_SOURCE`.
+- Diagnostics include `iq_source`.
+- Main menu CS8 playback follows selected source.
+- Scanner follows selected source.
 
-Use the app's playback-session path, not only one-frame decode, because vertical lock state persists across calls only in the session:
+Current scanner behavior:
 
-- `createAnalogVideoPlaybackSession(...)`
-- `decodeNextAnalogVideoPlaybackFrame(...)`
-- `decodeNextPlaybackFrame(...)`
-- `AnalogVideoDecoder::decodeOneFrame(...)`
+- `PlutoIqSource.WEBSOCKET` routes to `probeChannelForSignalViaWebSocket(...)`.
+- `PlutoIqSource.IIO` uses the existing adaptive IP IIO probe path.
+- Both feed frames through native playback sessions and the same decoder algorithm.
 
-Breakpoints worth setting:
+### 4. IIO-Specific Fixes Applied After WebSocket Worked But IIO Did Not
 
-- `AnalogVideoDecoder::decodeOneFrame`
-- `AnalogVideoDecoder::sampleLockedFieldStartSyncIndex`
-- `FrameAssembler::chooseFieldPreviewStartSyncIndex`
-- `SyncDetector::detectFrameSyncEdges`
-- `FrameAssembler::doubleImageScore`
+The user reported:
 
-Caveat: `app/src/main/cpp/CMakeLists.txt` currently applies `-O3` globally, including debug builds. LLDB breakpoints may hit, but stepping/local variables can be unreliable. For serious native debugging, use Debug `-O0 -g` and keep Release optimized.
+- WebSocket works fine: `screen-20260712-223911`.
+- IIO still broken: `screen-20260712-223725`.
 
-## Latest Changes
+Likely IIO-only causes found and patched:
 
-- Fixed sample-domain vertical lock to use the decimated video sample rate for line-length residuals and correction steps.
-- Fixed h_sync_missing_rate to use the decimated video line length.
-- Implemented K as a sync-only LPF path: `videoBaseband_` remains the pixel source, `syncBaseband_`/`syncVideo_` drive `SyncDetector`.
-- Added sync_lpf_cutoff_hz to frame diagnostics.
-- Added decoder-side sync history ring over the decimated sync-video path. This stores sync-domain samples, not raw IQ, because V-edge selection happens after FM demod + sync LPF and the memory footprint is much smaller.
-- Added strict V-edge tracker using absolute video-sample offsets. It selects frame-sync edges only when they form a chain at the standard interlaced field interval: PAL 25 fps -> 50 fields/s, NTSC 29.97 fps -> 59.94 fields/s.
-- Added `FrameAssembler::chooseFieldPreviewStartFromFrameSyncEdge(...)` so strict V-edge selection can drive active-start mapping without falling back to full-buffer active-window search.
-- Added diagnostics: `strict_frame_sync_edges`, `strict_v_locked`, `strict_v_chain`, `strict_v_misses`, `strict_v_edge_sample`, `strict_v_interval_err`, `sync_history_samples`.
-- Added visual edge timeline under the video output. `EdgeTimelineView` draws strict accepted edges as green vertical bars and skipped detected frame-sync edges as semi-transparent red bars.
-- Native diagnostics now include `timeline_samples`, `timeline_strict_edges`, and `timeline_skipped_edges`; Kotlin parses these from each analog playback frame while preserving the existing slower text-panel update cadence.
+#### IIO live buffer size
 
-## Diagnostics To Watch
+Adaptive branch had:
 
-The decoder already emits many of the needed values in frame diagnostics:
+- `kPlutoLivePlaybackBufferSamples = 262144`
 
-- `field_start_sync`
-- `field_start_candidate`
-- `double_image_score`
-- `assembly_path`
-- `field_start_line_offset`
-- `field_start_locked`
-- `v_sample_locked`
-- `v_relock_count`
-- `v_residual_samples`
-- `v_edge_sample`
-- `v_edge_quality`
-- `field_period_err`
-- `h_sync_missing_rate`
+Known-good branch had:
 
-Next useful capture/debug question: after fixing the decimated-rate line length, check whether instability is due to bad V-edge candidates, sticky sample lock, or double-image alternate selection.
+- `kPlutoLivePlaybackBufferSamples = 32768`
+
+Current patch restored:
+
+- `kPlutoLivePlaybackBufferSamples = 32768`
+
+Reason: large IIO buffers can feed stale/pre-retune samples and make vertical lock unstable or laggy.
+
+#### IIO analysis rate
+
+Adaptive branch temporarily treated IIO CS8 like WebSocket CS8:
+
+- WebSocket/IIO CS8 both used 10 MHz analysis.
+
+Current patch changed this:
+
+- Only `pluto_websocket_cs8_live` uses `kWebSocketCs8PlaybackAnalysisRateHz = 10000000` and cutoff `2200000`.
+- IIO uses default playback analysis rate `1500000` and default cutoff.
+
+Reason: the known-good WebSocket path is raw CS8 at 10 MHz. The IIO source path may not behave like that, especially if libiio gives CS16-shaped payloads or different effective payload layout.
+
+#### CS8 request with CS16-shaped IIO payload
+
+`PlutoSource` currently supports single-channel packed CS8 mode, but libiio can still return 4-byte IQ pairs. Before the patch, if CS8 was requested and payload step was 4 bytes, the code read:
+
+- `iq[0]` as I
+- `iq[1]` as Q
+
+That incorrectly maps `I_low, I_high` as `I,Q` for CS16-shaped little-endian payloads.
+
+Current patch tracks `cs8RequestUsingCs16Payload` and extracts:
+
+- `iq[1]` as I high byte
+- `iq[3]` as Q high byte
+
+File:
+
+- `app/src/main/cpp/source/PlutoSource.cpp`
+
+## Build Verification
+
+Last command run:
+
+```powershell
+.\gradlew.bat :app:assembleDebug
+```
+
+Result:
+
+- Build successful.
+
+Also ran:
+
+```powershell
+git diff --check
+```
+
+Result:
+
+- No whitespace errors.
+- Only CRLF normalization warnings on copied C++ video files.
+
+## Current Git State Notes
+
+Known modified files include:
+
+- `app/src/main/cpp/native-lib.cpp`
+- `app/src/main/cpp/source/PlutoSource.cpp`
+- `app/src/main/cpp/source/video/AnalogVideoDecoder.cpp`
+- `app/src/main/cpp/source/video/AnalogVideoDecoder.h`
+- `app/src/main/cpp/source/video/FrameAssembler.cpp`
+- `app/src/main/cpp/source/video/FrameAssembler.h`
+- `app/src/main/cpp/source/video/SyncDetector.cpp`
+- `app/src/main/cpp/source/video/SyncDetector.h`
+- `app/src/main/java/com/example/sdrvideoscanner/MainActivity.kt`
+- `app/src/main/res/layout/dialog_pluto_iq_config.xml`
+
+Untracked but required by current layout:
+
+- `app/src/main/java/com/example/sdrvideoscanner/EdgeTimelineView.kt`
+
+`activity_main.xml` references `EdgeTimelineView`, so do not delete the untracked file unless the layout reference is also removed or replaced.
+
+## Files To Inspect First Tomorrow
+
+- `app/src/main/cpp/native-lib.cpp`
+  - `makePlaybackDecoderConfig(...)`
+  - `createPlutoPlaybackSession(...)`
+  - `decodeNextPlaybackFrame(...)`
+
+- `app/src/main/cpp/source/PlutoSource.cpp`
+  - `choosePayloadLayout(...)`
+  - `PlutoSource::open()`
+  - `PlutoSource::read(...)`
+
+- `app/src/main/java/com/example/sdrvideoscanner/MainActivity.kt`
+  - `probeChannelForSignal(...)`
+  - `probeChannelForSignalViaWebSocket(...)`
+  - `startConfiguredPlutoCs8Playback(...)`
+  - `openPlutoIpIioPlaybackSessionWithRetry(...)`
+
+## Next Steps Tomorrow
+
+1. Runtime-test IIO after the latest IIO-specific patch.
+2. Confirm IIO diagnostics show `decoder_mode=fast_field_preview` and sane `timing_video_sample_rate_hz`.
+3. If IIO remains unstable, compare one WebSocket-good diagnostic and one IIO-bad diagnostic side by side.
+4. If IIO payload layout is still suspect, add a one-line native diagnostic from `PlutoSource::open()` or first read with:
+   - configured stride
+   - payload bytes
+   - selected step bytes
+   - whether `cs8RequestUsingCs16Payload` is active
+5. Avoid further decoder changes until IIO source payload/timing is proven correct, because WebSocket now validates the shared decoder algorithm.

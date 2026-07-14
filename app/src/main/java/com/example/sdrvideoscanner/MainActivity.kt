@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
         val defaultIqPath = defaultIqPathForConfig()
         val defaultMetadataPath = metadataFileFor(defaultIqPath).absolutePath
         binding.sampleText.text = "Place ${File(defaultIqPath).name} at:\n$defaultIqPath\n\nOptional metadata:\n$defaultMetadataPath"
-        binding.currentMenuLabel.text = "Selected: Pluto IIO CS8"
+        binding.currentMenuLabel.text = "Selected: Pluto CS8 (${plutoIqConfig.iqSource.label})"
         updateStatsVisibility()
         if (!isPlutoCaptureAvailable()) {
             binding.sampleText.text = "Pluto capture is not compiled into this APK.\n\n" +
@@ -245,7 +245,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMainMenu() {
         PopupMenu(this, binding.mainMenuButton).apply {
-            menu.add(0, MENU_PLAY_PLUTO_IIO_CS8, 0, "Play Pluto IP IIO CS8")
+            menu.add(0, MENU_PLAY_PLUTO_IIO_CS8, 0, "Play Pluto CS8 (${plutoIqConfig.iqSource.label})")
             menu.add(0, MENU_PLAY_PLUTO_USB_CS16, 1, "Play Pluto IP IIO CS16")
             menu.add(0, MENU_STOP, 2, "Stop")
             menu.add(0, MENU_SETUP_IQ, 3, "Setup IQ")
@@ -270,8 +270,7 @@ class MainActivity : AppCompatActivity() {
                 stopScannerMode()
                 stopSpectrum()
                 stopPlayback()
-                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
-                preparePlutoIpIioPlayback(VideoStandard.AUTO, plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS8))
+                startConfiguredPlutoCs8Playback(VideoStandard.AUTO, plutoIqConfig)
             }
             MENU_PLAY_PLUTO_USB_CS16 -> {
                 stopScannerMode()
@@ -636,10 +635,11 @@ class MainActivity : AppCompatActivity() {
         currentScannerChannel = channel
         scanController.startScanning()
         updateScannerUi()
+        val scanConfig = scannerConfigForChannel(channel)
         binding.sampleText.text = scannerProgressText(
-            title = "Scanning live Pluto IP IIO",
+            title = "Scanning live ${scanConfig.iqSource.label}",
             channel = channel,
-            config = scannerConfigForChannel(channel),
+            config = scanConfig,
         )
         decodeExecutor.execute {
             val initialResult = probeChannelForSignal(channel, ScannerProbeProfile.QUICK)
@@ -773,6 +773,9 @@ class MainActivity : AppCompatActivity() {
             gainController.tuneChannel(channel, "confirmation channel tune")
         }
         val config = scannerConfigForChannel(channel).copy(gainDb = channelGainSnapshot.plutoGainDb)
+        if (config.iqSource == PlutoIqSource.WEBSOCKET) {
+            return probeChannelForSignalViaWebSocket(channel, profile, config)
+        }
         val uri = plutoIioIpUri(config)
         val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
@@ -940,7 +943,7 @@ class MainActivity : AppCompatActivity() {
                 rssiDbfs = if (analogDetected) estimateRssiDbfs(bestConfidence) else null,
                 confidence = bestConfidence,
                 previewFrame = if (analogDetected) bestFrame?.bitmap else null,
-                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${config.sampleFormat.metadataValue}\nscanner_iio_transport: ip_iio\nscanner_android_network: ${networkLabel(plutoNetwork)}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$iqMetricsDiagnostic\n$bestDiagnostic",
+                diagnostic = "scanner_stage: cs8_libiio_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${config.sampleFormat.metadataValue}\nscanner_iq_source: ${config.iqSource.preferenceValue}\nscanner_iio_transport: ip_iio\nscanner_android_network: ${networkLabel(plutoNetwork)}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$iqMetricsDiagnostic\n$bestDiagnostic",
                 imageQuality = if (analogDetected) previewQuality else 0.0,
             )
             val metrics = gainMetricsFromDiagnostics(
@@ -955,6 +958,185 @@ class MainActivity : AppCompatActivity() {
                 closeAnalogVideoPlaybackSession(sessionHandle)
             }
             restorePlaybackNetworkBinding(previousBoundNetwork, plutoNetwork)
+        }
+    }
+
+    private fun probeChannelForSignalViaWebSocket(
+        channel: KnownChannel,
+        profile: ScannerProbeProfile,
+        config: PlutoIqConfig,
+    ): SignalProbeResult {
+        val uri = "ws://${config.plutoWebSocketEndpoint()}${config.plutoWebSocketPath}"
+        val primeDiagnostic = primePlutoUsbForWebSocket(config)
+        val networkSelection = findPlutoNetworkWithDiagnostics(config.maiaHost.ifBlank { MAIA_DEFAULT_HOST })
+        val plutoNetwork = networkSelection.network
+        if (plutoNetwork == null || plutoNetwork.networkHandle == 0L) {
+            return scannerSourceFailureResult(
+                uri = uri,
+                config = config,
+                reason = "Android network to Pluto WebSocket host was not found",
+                diagnostic = "$primeDiagnostic\n${networkSelection.diagnostics}",
+            )
+        }
+        val tcpTest = testTcpConnection(
+            network = plutoNetwork,
+            host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST },
+            port = config.maiaPort,
+            label = "Pluto WebSocket TCP connection test",
+            connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
+        )
+        if (!tcpTest.connectionEstablished) {
+            return scannerSourceFailureResult(
+                uri = uri,
+                config = config,
+                reason = "Pluto WebSocket TCP ${config.maiaHost}:${config.maiaPort} was not reachable",
+                diagnostic = "$primeDiagnostic\n${networkSelection.diagnostics}\n${tcpTest.diagnostics}",
+            )
+        }
+
+        val transport = PlutoWebSocketTransport.create(
+            network = plutoNetwork,
+            host = config.maiaHost,
+            port = config.maiaPort,
+            path = config.plutoWebSocketPath,
+            connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
+            readTimeoutMs = PLUTO_WS_READ_TIMEOUT_MS,
+        )
+        var sessionHandle = 0L
+        return try {
+            sessionHandle = createPlutoWebSocketAnalogVideoPlaybackSession(
+                host = config.maiaHost,
+                port = config.maiaPort,
+                path = config.plutoWebSocketPath,
+                sampleRateHz = config.sampleRateHz,
+                receiveBufferMs = config.plutoWebSocketReceiveBufferMs,
+                videoStandard = VideoStandard.AUTO.nativeValue,
+                androidWebSocketTransport = transport,
+            )
+            if (sessionHandle == 0L) {
+                val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                return scannerSourceFailureResult(
+                    uri = uri,
+                    config = config,
+                    reason = "native Pluto WebSocket playback probe session could not be created",
+                    diagnostic = "$primeDiagnostic\nprobe_session_failed: $nativeError\n${networkSelection.diagnostics}",
+                )
+            }
+
+            Thread.sleep(SCANNER_RETUNE_SETTLE_MS)
+            val discardedFrames = scannerProbeDiscardFrameCount(profile)
+            repeat(discardedFrames) { discardIndex ->
+                val packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle)
+                if (packet.isEmpty()) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    return scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto WebSocket probe returned no frame while discarding frame $discardIndex",
+                        diagnostic = "$primeDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                }
+            }
+
+            var bestFrame: DecodedFrame? = null
+            var bestDiagnostic = ""
+            var bestConfidence = 0.0
+            var detectedFrameCount = 0
+            var sourceFailureResult: SignalProbeResult? = null
+
+            fun scoreNextFrame(frameIndex: Int): Boolean {
+                val packet = decodeNextAnalogVideoPlaybackFrame(sessionHandle)
+                if (packet.isEmpty()) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    sourceFailureResult = scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto WebSocket probe returned no frame at scored frame $frameIndex",
+                        diagnostic = "$primeDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                    return false
+                }
+                val frame = grayscaleFramePacketToBitmap(
+                    packet = packet,
+                    includeDiagnostic = true,
+                )
+                if (frame == null) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    sourceFailureResult = scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto WebSocket probe returned a malformed frame packet at scored frame $frameIndex",
+                        diagnostic = "$primeDiagnostic\nnative_error: $nativeError\n${networkSelection.diagnostics}",
+                    )
+                    return false
+                }
+                val diagnostic = frame.diagnostic
+                val confidence = analogConfidence(diagnostic)
+                if (isAnalogVideoDetected(diagnostic)) {
+                    detectedFrameCount += 1
+                }
+                if (confidence >= bestConfidence) {
+                    bestFrame = frame
+                    bestDiagnostic = diagnostic
+                    bestConfidence = confidence
+                }
+                return true
+            }
+
+            repeat(scannerFastProbeFrameCount(profile)) { index ->
+                if (!scoreNextFrame(index)) {
+                    return sourceFailureResult ?: scannerSourceFailureResult(
+                        uri = uri,
+                        config = config,
+                        reason = "native Pluto WebSocket playback probe failed",
+                        diagnostic = "$primeDiagnostic\n${networkSelection.diagnostics}",
+                    )
+                }
+            }
+
+            val needsConfirmation = detectedFrameCount > 0 ||
+                bestConfidence >= SCANNER_CONFIRMATION_CONFIDENCE
+            if (needsConfirmation) {
+                repeat(scannerConfirmProbeFrameCount(profile)) { index ->
+                    if (!scoreNextFrame(scannerFastProbeFrameCount(profile) + index)) {
+                        return sourceFailureResult ?: scannerSourceFailureResult(
+                            uri = uri,
+                            config = config,
+                            reason = "native Pluto WebSocket confirmation probe failed",
+                            diagnostic = "$primeDiagnostic\n${networkSelection.diagnostics}",
+                        )
+                    }
+                }
+            }
+
+            val scoredFrameCount = scannerFastProbeFrameCount(profile) +
+                if (needsConfirmation) scannerConfirmProbeFrameCount(profile) else 0
+            val analogDetected = detectedFrameCount >= scannerRequiredDetectedFrameCount(profile) &&
+                bestConfidence >= SCANNER_MIN_ANALOG_CONFIDENCE
+            val previewQuality = bestFrame?.bitmap?.let { imageQualityScore(it) } ?: 0.0
+            val iqMetricsDiagnostic = "pluto_ws_iq_metrics: unavailable"
+            val result = SignalProbeResult(
+                signalPresent = analogDetected,
+                signalType = if (analogDetected) SignalType.ANALOG else SignalType.UNKNOWN,
+                rssiDbfs = if (analogDetected) estimateRssiDbfs(bestConfidence) else null,
+                confidence = bestConfidence,
+                previewFrame = if (analogDetected) bestFrame?.bitmap else null,
+                diagnostic = "scanner_stage: cs8_websocket_video_decode\nscanner_probe_profile: ${profile.name.lowercase(Locale.US)}\nscanner_uri: $uri\nscanner_sample_format: ${IqSampleFormat.CS8.metadataValue}\nscanner_iq_source: ${config.iqSource.preferenceValue}\nscanner_android_network: ${networkLabel(plutoNetwork)}\nscanner_center_frequency_hz: ${config.centerFrequencyHz}\nscanner_channel: ${channel.channelName}\nscanner_retune_settle_ms: $SCANNER_RETUNE_SETTLE_MS\nscanner_discarded_frames: $discardedFrames\nscanner_detected_frames: $detectedFrameCount\nscanner_scored_frames: $scoredFrameCount\n$primeDiagnostic\n$iqMetricsDiagnostic\n$bestDiagnostic",
+                imageQuality = if (analogDetected) previewQuality else 0.0,
+            )
+            gainController.update(
+                gainMetricsFromDiagnostics(
+                    iqMetricsDiagnostic = iqMetricsDiagnostic,
+                    videoDiagnostic = bestDiagnostic,
+                    videoConfidence = bestConfidence,
+                ),
+            )
+            result
+        } finally {
+            if (sessionHandle != 0L) {
+                closeAnalogVideoPlaybackSession(sessionHandle)
+            }
+            transport.close()
         }
     }
 
@@ -1035,12 +1217,21 @@ class MainActivity : AppCompatActivity() {
             confidence = 0.0,
             previewFrame = null,
             diagnostic = buildString {
-                append("scanner_stage: cs8_libiio_video_decode")
+                append("scanner_stage: ")
+                append(
+                    when (config.iqSource) {
+                        PlutoIqSource.IIO -> "cs8_libiio_video_decode"
+                        PlutoIqSource.WEBSOCKET -> "cs8_websocket_video_decode"
+                    },
+                )
                 append("\nscanner_source_failed: true")
                 append("\nscanner_source_failure_reason: $reason")
                 append("\nscanner_uri: $uri")
                 append("\nscanner_sample_format: ${config.sampleFormat.metadataValue}")
-                append("\nscanner_iio_transport: ip_iio")
+                append("\nscanner_iq_source: ${config.iqSource.preferenceValue}")
+                if (config.iqSource == PlutoIqSource.IIO) {
+                    append("\nscanner_iio_transport: ip_iio")
+                }
                 append("\nscanner_center_frequency_hz: ${config.centerFrequencyHz}")
                 if (diagnostic.isNotBlank()) {
                     append("\n")
@@ -1239,7 +1430,7 @@ class MainActivity : AppCompatActivity() {
     ): String {
         return buildString {
             append(title)
-            append("\n\nsource: Pluto IP IIO live scan")
+            append("\n\nsource: ${config.iqSource.label} live scan")
             append("\nsample_format: ${config.sampleFormat.metadataValue}")
             append("\nsample_rate_hz: ${config.sampleRateHz}")
             append("\nrf_bandwidth_hz: ${config.rfBandwidthHz}")
@@ -1369,14 +1560,30 @@ class MainActivity : AppCompatActivity() {
         selectedPlaybackChannel = channel
         gainController.tuneChannel(channel, "selected playback tune")
         scanController.lockPlaying()
-        activeMode = ActiveMode.PLUTO_IP_PLAYBACK
         updateScannerUi()
-        preparePlutoIpIioPlayback(
+        startConfiguredPlutoCs8Playback(
             VideoStandard.AUTO,
             configForChannel(channel)
                 .forcedSampleFormat(IqSampleFormat.CS8)
                 .copy(gainDb = gainController.currentPlutoGainDb),
         )
+    }
+
+    private fun startConfiguredPlutoCs8Playback(
+        standard: VideoStandard,
+        config: PlutoIqConfig,
+    ) {
+        val playbackConfig = config.forcedSampleFormat(IqSampleFormat.CS8)
+        when (playbackConfig.iqSource) {
+            PlutoIqSource.IIO -> {
+                activeMode = ActiveMode.PLUTO_IP_PLAYBACK
+                preparePlutoIpIioPlayback(standard, playbackConfig)
+            }
+            PlutoIqSource.WEBSOCKET -> {
+                activeMode = ActiveMode.PLUTO_WS_PLAYBACK
+                preparePlutoWebSocketPlayback(standard, playbackConfig)
+            }
+        }
     }
 
     private fun retunePlaybackToAdjacentChannel(direction: Int) {
@@ -1645,12 +1852,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun plutoConnectionStatus(snapshot: PlutoSessionRecovery): PlutoConnectionStatus {
         return when (snapshot.mode) {
-            ActiveMode.PLUTO_SCANNER,
+            ActiveMode.PLUTO_SCANNER -> when (snapshot.config.iqSource) {
+                PlutoIqSource.IIO -> plutoIpIioConnectionStatus(snapshot.config)
+                PlutoIqSource.WEBSOCKET -> webSocketPlutoConnectionStatus(snapshot.config)
+            }
             ActiveMode.PLUTO_IP_PLAYBACK -> plutoIpIioConnectionStatus(snapshot.config)
             ActiveMode.PLUTO_USB_PLAYBACK,
             ActiveMode.PLUTO_USB_SPECTRUM -> directUsbPlutoConnectionStatus()
             ActiveMode.PLUTO_WS_PLAYBACK,
-            ActiveMode.PLUTO_WS_SPECTRUM -> webSocketPlutoConnectionStatus()
+            ActiveMode.PLUTO_WS_SPECTRUM -> webSocketPlutoConnectionStatus(snapshot.config)
             else -> PlutoConnectionStatus(connected = true, diagnostic = "pluto_monitor: mode ${snapshot.mode} is not monitored")
         }
     }
@@ -1680,17 +1890,33 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun webSocketPlutoConnectionStatus(): PlutoConnectionStatus {
-        val ethernetSelection = findEthernetNetworkWithDiagnostics()
-        if (ethernetSelection.network == null || ethernetSelection.network.networkHandle == 0L) {
+    private fun webSocketPlutoConnectionStatus(config: PlutoIqConfig): PlutoConnectionStatus {
+        val host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST }
+        val selection = findPlutoNetworkWithDiagnostics(host)
+        val network = selection.network
+        if (network == null || network.networkHandle == 0L) {
             return PlutoConnectionStatus(
                 connected = false,
-                diagnostic = "pluto_ws: Android Ethernet network missing\n${ethernetSelection.diagnostics}",
+                diagnostic = "pluto_ws: Android network to $host missing\n${selection.diagnostics}",
+            )
+        }
+        val tcpTest = testTcpConnection(
+            network = network,
+            host = host,
+            port = config.maiaPort,
+            label = "Pluto WebSocket TCP connection test",
+            connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
+        )
+        if (!tcpTest.connectionEstablished) {
+            return PlutoConnectionStatus(
+                connected = false,
+                diagnostic = "pluto_ws: TCP $host:${config.maiaPort} unreachable on ${networkLabel(network)}\n" +
+                    selection.diagnostics + "\n" + tcpTest.diagnostics,
             )
         }
         return PlutoConnectionStatus(
             connected = true,
-            diagnostic = "pluto_ws: Ethernet network ${networkLabel(ethernetSelection.network)}",
+            diagnostic = "pluto_ws: TCP reachable on ${networkLabel(network)}",
         )
     }
 
@@ -3166,18 +3392,34 @@ class MainActivity : AppCompatActivity() {
         network: Network,
         host: String,
     ): MaiaHttpConnectionTestResult {
+        return testTcpConnection(
+            network = network,
+            host = host,
+            port = PLUTO_IP_IIO_PORT,
+            label = "Pluto iiod TCP connection test",
+            connectTimeoutMs = PLUTO_IP_CONNECT_TIMEOUT_MS,
+        )
+    }
+
+    private fun testTcpConnection(
+        network: Network,
+        host: String,
+        port: Int,
+        label: String,
+        connectTimeoutMs: Int,
+    ): MaiaHttpConnectionTestResult {
         val diagnostics = StringBuilder()
-        diagnostics.append("Pluto iiod TCP connection test\n")
-        diagnostics.append("target: $host:$PLUTO_IP_IIO_PORT\n")
+        diagnostics.append("$label\n")
+        diagnostics.append("target: $host:$port\n")
         diagnostics.append("network: ${networkLabel(network)}\n")
         diagnostics.append("network_handle: ${network.networkHandle}\n")
-        diagnostics.append("connect_timeout_ms: $PLUTO_IP_CONNECT_TIMEOUT_MS\n")
+        diagnostics.append("connect_timeout_ms: $connectTimeoutMs\n")
 
         return try {
             network.socketFactory.createSocket().use { socket ->
                 socket.connect(
-                    InetSocketAddress(host, PLUTO_IP_IIO_PORT),
-                    PLUTO_IP_CONNECT_TIMEOUT_MS,
+                    InetSocketAddress(host, port),
+                    connectTimeoutMs,
                 )
                 diagnostics.append("socket_local_address: ${socket.localAddress?.hostAddress ?: "unavailable"}:${socket.localPort}\n")
                 diagnostics.append("socket_remote_address: ${socket.inetAddress?.hostAddress ?: "unavailable"}:${socket.port}\n")
@@ -3979,6 +4221,10 @@ class MainActivity : AppCompatActivity() {
         dialogBinding: DialogPlutoIqConfigBinding,
         config: PlutoIqConfig,
     ) {
+        when (config.iqSource) {
+            PlutoIqSource.IIO -> dialogBinding.iqSourceIioRadio.isChecked = true
+            PlutoIqSource.WEBSOCKET -> dialogBinding.iqSourceWebsocketRadio.isChecked = true
+        }
         dialogBinding.maiaHostInput.setText(config.maiaHost)
         dialogBinding.maiaPortInput.setText(config.maiaPort.toString())
         dialogBinding.plutoWsPathInput.setText(config.plutoWebSocketPath)
@@ -4071,6 +4317,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         return PlutoIqConfig(
+            iqSource = when {
+                dialogBinding.iqSourceIioRadio.isChecked -> PlutoIqSource.IIO
+                else -> PlutoIqSource.WEBSOCKET
+            },
             maiaHost = maiaHost,
             maiaPort = maiaPort,
             plutoWebSocketPath = plutoWebSocketPath,
@@ -4240,6 +4490,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun defaultPlutoIqConfig(): PlutoIqConfig {
         return PlutoIqConfig(
+            iqSource = PlutoIqSource.WEBSOCKET,
             maiaHost = MAIA_DEFAULT_HOST,
             maiaPort = PLUTO_WS_DEFAULT_PORT,
             plutoWebSocketPath = PLUTO_WS_DEFAULT_PATH,
@@ -4272,6 +4523,9 @@ class MainActivity : AppCompatActivity() {
         val defaults = defaultPlutoIqConfig()
         val preferences = getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
         return PlutoIqConfig(
+            iqSource = PlutoIqSource.fromPreferenceValue(
+                preferences.getString(PREF_IQ_SOURCE, defaults.iqSource.preferenceValue),
+            ),
             maiaHost = preferences.getString(PREF_MAIA_HOST, defaults.maiaHost)?.trim()?.takeIf { it.isNotBlank() }
                 ?: defaults.maiaHost,
             maiaPort = preferences.getInt(PREF_PLUTO_WS_PORT, defaults.maiaPort).takeIf { it in 1..65535 }
@@ -4313,6 +4567,7 @@ class MainActivity : AppCompatActivity() {
     private fun savePlutoIqConfigDefaults(config: PlutoIqConfig) {
         getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
+            .putString(PREF_IQ_SOURCE, config.iqSource.preferenceValue)
             .putString(PREF_MAIA_HOST, config.maiaHost)
             .putInt(PREF_PLUTO_WS_PORT, config.maiaPort)
             .putString(PREF_PLUTO_WS_PATH, config.plutoWebSocketPath)
@@ -4528,6 +4783,7 @@ class MainActivity : AppCompatActivity() {
     )
 
     private data class PlutoIqConfig(
+        val iqSource: PlutoIqSource,
         val maiaHost: String,
         val maiaPort: Int,
         val plutoWebSocketPath: String,
@@ -4565,7 +4821,9 @@ class MainActivity : AppCompatActivity() {
 
         fun toDiagnosticText(): String {
             return buildString {
-                append("pluto_websocket_endpoint: ws://${plutoWebSocketEndpoint()}$plutoWebSocketPath")
+                append("iq_source: ${iqSource.preferenceValue}")
+                append("\npluto_iio_uri: ${plutoIioUri()}")
+                append("\npluto_websocket_endpoint: ws://${plutoWebSocketEndpoint()}$plutoWebSocketPath")
                 append("\npluto_ws_receive_buffer_ms: $plutoWebSocketReceiveBufferMs")
                 append("\nformat: ${sampleFormat.metadataValue}")
                 append("\nsample_rate_hz: $sampleRateHz")
@@ -4579,6 +4837,10 @@ class MainActivity : AppCompatActivity() {
                 append("\nhardware_bbdc_correction: $hardwareBbdcCorrection")
                 append("\nhardware_rfdc_correction: $hardwareRfdcCorrection")
             }
+        }
+
+        private fun plutoIioUri(): String {
+            return "ip:${maiaHost.ifBlank { MAIA_DEFAULT_HOST }}"
         }
     }
 
@@ -4597,6 +4859,21 @@ class MainActivity : AppCompatActivity() {
                 return when (value?.trim()?.uppercase()) {
                     "CS8" -> CS8
                     else -> CS16
+                }
+            }
+        }
+    }
+
+    private enum class PlutoIqSource(val preferenceValue: String, val label: String) {
+        IIO("iio", "Pluto IP IIO"),
+        WEBSOCKET("websocket", "Pluto WebSocket");
+
+        companion object {
+            fun fromPreferenceValue(value: String?): PlutoIqSource {
+                return when (value?.trim()?.lowercase(Locale.US)) {
+                    "iio" -> IIO
+                    "websocket", "ws" -> WEBSOCKET
+                    else -> WEBSOCKET
                 }
             }
         }
@@ -4942,6 +5219,7 @@ class MainActivity : AppCompatActivity() {
         private const val PLUTO_WS_DEFAULT_PORT = 7682
         private const val PLUTO_WS_DEFAULT_PATH = "/iq"
         private const val PLUTO_PREFS_NAME = "pluto_iq_setup"
+        private const val PREF_IQ_SOURCE = "iq_source"
         private const val PREF_MAIA_HOST = "maia_host"
         private const val PREF_PLUTO_WS_PORT = "pluto_ws_port"
         private const val PREF_PLUTO_WS_PATH = "pluto_ws_path"

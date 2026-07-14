@@ -13,7 +13,6 @@ struct SyncDetectionResult {
     std::uint8_t threshold = 0;
     double score = 0.0;
     double lineStabilityScore = 0.0;
-    double frameSyncQuality = 0.0;
 };
 
 class SyncDetector {

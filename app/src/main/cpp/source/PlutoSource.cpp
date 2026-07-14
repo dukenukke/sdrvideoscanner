@@ -135,6 +135,7 @@ namespace sdr {
 
         struct PayloadLayout {
             std::size_t bytesPerIqPair = 0;
+            bool cs8RequestUsingCs16Payload = false;
         };
 
         PayloadLayout choosePayloadLayout(
@@ -143,23 +144,23 @@ namespace sdr {
                 std::size_t payloadBytes,
                 std::size_t requestedBlockSamples) {
             if (!requestedCs8) {
-                return PayloadLayout{kCs16BytesPerIqPair};
+                return PayloadLayout{kCs16BytesPerIqPair, false};
             }
 
             if (requestedBlockSamples > 0) {
                 if (payloadBytes == requestedBlockSamples * kCs8BytesPerIqPair) {
-                    return PayloadLayout{kCs8BytesPerIqPair};
+                    return PayloadLayout{kCs8BytesPerIqPair, false};
                 }
                 if (payloadBytes == requestedBlockSamples * kCs16BytesPerIqPair) {
-                    return PayloadLayout{kCs16BytesPerIqPair};
+                    return PayloadLayout{kCs16BytesPerIqPair, true};
                 }
             }
 
             if (configuredStrideBytes == kCs8BytesPerIqPair) {
-                return PayloadLayout{kCs8BytesPerIqPair};
+                return PayloadLayout{kCs8BytesPerIqPair, false};
             }
             if (configuredStrideBytes == kCs16BytesPerIqPair) {
-                return PayloadLayout{kCs16BytesPerIqPair};
+                return PayloadLayout{kCs16BytesPerIqPair, true};
             }
 
             return {};
@@ -183,6 +184,7 @@ namespace sdr {
         const char* currentPtr = nullptr;
         const char* currentEnd = nullptr;
         std::size_t currentStepBytes = 0;
+        bool currentCs8RequestUsingCs16Payload = false;
         std::size_t sampleStrideBytes = 0;
         std::size_t requestedBlockSamples = 0;
 #endif
@@ -343,6 +345,7 @@ namespace sdr {
         impl_->currentPtr = nullptr;
         impl_->currentEnd = nullptr;
         impl_->currentStepBytes = 0;
+        impl_->currentCs8RequestUsingCs16Payload = false;
         impl_->sampleStrideBytes = 0;
         impl_->requestedBlockSamples = 0;
         impl_->rxI = impl_->rxQ = nullptr;
@@ -423,11 +426,13 @@ namespace sdr {
                         payloadBytes,
                         impl_->requestedBlockSamples);
                 impl_->currentStepBytes = layout.bytesPerIqPair;
+                impl_->currentCs8RequestUsingCs16Payload = layout.cs8RequestUsingCs16Payload;
                 if (impl_->currentStepBytes == 0 || payloadBytes < impl_->currentStepBytes) {
                     buffer.resizeSamples(samplesCopied);
                     impl_->currentPtr = nullptr;
                     impl_->currentEnd = nullptr;
                     impl_->currentStepBytes = 0;
+                    impl_->currentCs8RequestUsingCs16Payload = false;
                     return makeReadResult(
                             samplesCopied,
                             false,
@@ -444,6 +449,7 @@ namespace sdr {
                 impl_->currentPtr = nullptr;
                 impl_->currentEnd = nullptr;
                 impl_->currentStepBytes = 0;
+                impl_->currentCs8RequestUsingCs16Payload = false;
                 continue;
             }
 
@@ -452,8 +458,13 @@ namespace sdr {
             if (isCs8) {
                 for (std::size_t i = 0; i < samplesToCopy; ++i, ptr += impl_->currentStepBytes) {
                     const auto* iq = reinterpret_cast<const std::int8_t*>(ptr);
-                    output[i * 2] = static_cast<std::int16_t>(iq[0]) << 8;
-                    output[i * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
+                    if (impl_->currentCs8RequestUsingCs16Payload) {
+                        output[i * 2] = static_cast<std::int16_t>(iq[1]) << 8;
+                        output[i * 2 + 1] = static_cast<std::int16_t>(iq[3]) << 8;
+                    } else {
+                        output[i * 2] = static_cast<std::int16_t>(iq[0]) << 8;
+                        output[i * 2 + 1] = static_cast<std::int16_t>(iq[1]) << 8;
+                    }
                 }
             } else if (impl_->currentStepBytes == kCs16BytesPerIqPair) {
                 std::copy_n(
