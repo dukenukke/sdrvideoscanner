@@ -25,6 +25,7 @@ struct AnalogVideoDecoderConfig {
     bool fastFieldPreview = false;
     bool detectFrameSyncInFastPreview = false;
     std::size_t fastPreviewFieldStride = 1;
+    double liveFrameReadMultiplier = 1.0;
 };
 
 class AnalogVideoDecoder {

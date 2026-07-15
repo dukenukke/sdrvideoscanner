@@ -146,7 +146,8 @@ ReadResult FileSource::read(SampleBuffer& buffer, std::size_t maxSamples) {
     buffer.resizeSamples(samplesRead);
     if (format_.encoding == SampleEncoding::Cs8) {
         for (std::size_t index = 0; index < samplesRead * SampleBuffer::kValuesPerIqSample; ++index) {
-            buffer.data()[index] = static_cast<std::int16_t>(cs8ReadScratch_[index]) << 8;
+            buffer.data()[index] =
+                    static_cast<std::int16_t>(static_cast<int>(cs8ReadScratch_[index]) * 256);
         }
     }
 
