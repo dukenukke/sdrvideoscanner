@@ -106,6 +106,7 @@ class MainActivity : AppCompatActivity() {
     private var selectedPlaybackChannel: KnownChannel? = null
     private var currentScannerChannel: KnownChannel? = null
     private var statsVisible = false
+    private var lastPlutoWebSocketPrimeMs = 0L
     private var usbPermissionReceiverRegistered = false
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -3887,20 +3888,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun primePlutoUsbForWebSocket(config: PlutoIqConfig): String {
+        val throttleDelayMs = reservePlutoWebSocketPrimeDelay()
+        if (throttleDelayMs > 0L) {
+            Thread.sleep(throttleDelayMs)
+        }
+        val throttleDiagnostic = if (throttleDelayMs > 0L) {
+            "pluto_usb_prime_throttle_ms: $throttleDelayMs\n"
+        } else {
+            ""
+        }
         val usbManager = getSystemService(UsbManager::class.java)
         val plutoDevice = findPlutoUsbDevice(usbManager)
-            ?: return "pluto_usb_prime: skipped, Pluto USB device not found"
+            ?: return throttleDiagnostic + "pluto_usb_prime: skipped, Pluto USB device not found"
         if (!usbManager.hasPermission(plutoDevice)) {
-            return "pluto_usb_prime: skipped, Android USB permission is not granted"
+            return throttleDiagnostic + "pluto_usb_prime: skipped, Android USB permission is not granted"
         }
         val iioInterface = findPlutoIioInterface(plutoDevice)
-            ?: return "pluto_usb_prime: skipped, Pluto USB IIO interface was not found"
+            ?: return throttleDiagnostic + "pluto_usb_prime: skipped, Pluto USB IIO interface was not found"
         val connection = usbManager.openDevice(plutoDevice)
-            ?: return "pluto_usb_prime: failed, could not open Pluto USB device"
+            ?: return throttleDiagnostic + "pluto_usb_prime: failed, could not open Pluto USB device"
         return try {
             val fd = connection.fileDescriptor
             if (fd < 0) {
-                "pluto_usb_prime: failed, invalid Android USB file descriptor $fd"
+                throttleDiagnostic + "pluto_usb_prime: failed, invalid Android USB file descriptor $fd"
             } else {
                 val primeConfig = config.forcedSampleFormat(IqSampleFormat.CS16)
                 val sessionHandle = createPlutoAnalogVideoPlaybackSession(
@@ -3918,15 +3928,24 @@ class MainActivity : AppCompatActivity() {
                 )
                 if (sessionHandle == 0L) {
                     val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
-                    "pluto_usb_prime: failed, native CS16 libiio session could not be created; native_error: $nativeError"
+                    throttleDiagnostic + "pluto_usb_prime: failed, native CS16 libiio session could not be created; native_error: $nativeError"
                 } else {
                     closeAnalogVideoPlaybackSession(sessionHandle)
-                    "pluto_usb_prime: ok, configured ${formatFrequency(primeConfig.centerFrequencyHz)} through ${iioInterface.usbInterface.name ?: "IIO"}"
+                    throttleDiagnostic + "pluto_usb_prime: ok, configured ${formatFrequency(primeConfig.centerFrequencyHz)} through ${iioInterface.usbInterface.name ?: "IIO"}"
                 }
             }
         } finally {
             connection.close()
         }
+    }
+
+    @Synchronized
+    private fun reservePlutoWebSocketPrimeDelay(): Long {
+        val nowMs = SystemClock.elapsedRealtime()
+        val earliestMs = lastPlutoWebSocketPrimeMs + PLUTO_WS_PRIME_MIN_INTERVAL_MS
+        val delayMs = (earliestMs - nowMs).coerceAtLeast(0L)
+        lastPlutoWebSocketPrimeMs = nowMs + delayMs
+        return delayMs
     }
 
     private fun startPlutoWebSocketSpectrum(config: PlutoIqConfig) {
@@ -4528,7 +4547,11 @@ class MainActivity : AppCompatActivity() {
             ),
             maiaHost = preferences.getString(PREF_MAIA_HOST, defaults.maiaHost)?.trim()?.takeIf { it.isNotBlank() }
                 ?: defaults.maiaHost,
-            maiaPort = preferences.getInt(PREF_PLUTO_WS_PORT, defaults.maiaPort).takeIf { it in 1..65535 }
+            maiaPort = preferences.getInt(PREF_PLUTO_WS_PORT, defaults.maiaPort)
+                .takeIf { it in 1..65535 }
+                ?.let { port ->
+                    if (port == PLUTO_WS_LEGACY_DEFAULT_PORT) defaults.maiaPort else port
+                }
                 ?: defaults.maiaPort,
             plutoWebSocketPath = preferences.getString(PREF_PLUTO_WS_PATH, defaults.plutoWebSocketPath)
                 ?.trim()
@@ -4816,7 +4839,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun plutoWebSocketEndpoint(): String {
-            return "$maiaHost:$maiaPort"
+            return maiaEndpoint()
         }
 
         fun toDiagnosticText(): String {
@@ -5188,6 +5211,7 @@ class MainActivity : AppCompatActivity() {
         private const val MAIA_TEST_RESPONSE_LIMIT_BYTES = 64 * 1024
         private const val PLUTO_WS_CONNECT_TIMEOUT_MS = 3000
         private const val PLUTO_WS_READ_TIMEOUT_MS = 3000
+        private const val PLUTO_WS_PRIME_MIN_INTERVAL_MS = 2_000L
         private const val PLUTO_WS_RECEIVE_BUFFER_MIN_MS = 50
         private const val PLUTO_WS_RECEIVE_BUFFER_MAX_MS = 150
         private const val PLUTO_WS_RECEIVE_BUFFER_DEFAULT_MS = 120
@@ -5216,7 +5240,8 @@ class MainActivity : AppCompatActivity() {
         private const val PLUTO_HARDWARE_RFDC_CORRECTION = true
         private const val MAIA_DEFAULT_HOST = "192.168.2.1"
         private const val MAIA_DEFAULT_PORT = 80
-        private const val PLUTO_WS_DEFAULT_PORT = 7682
+        private const val PLUTO_WS_DEFAULT_PORT = MAIA_DEFAULT_PORT
+        private const val PLUTO_WS_LEGACY_DEFAULT_PORT = 7682
         private const val PLUTO_WS_DEFAULT_PATH = "/iq"
         private const val PLUTO_PREFS_NAME = "pluto_iq_setup"
         private const val PREF_IQ_SOURCE = "iq_source"

@@ -72,7 +72,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:hint="Pluto WebSocket port"
-            app:helperText="Default: 7682">
+            app:helperText="Default: 80">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/maia_port_input"
