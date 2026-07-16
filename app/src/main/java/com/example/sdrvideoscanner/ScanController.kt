@@ -43,6 +43,15 @@ class ScanController(
         recordsByFrequency.clear()
     }
 
+    fun replaceRecords(records: List<DetectedSignalRecord>) {
+        recordsByFrequency.clear()
+        records.forEach { record ->
+            val key = record.measuredFrequencyHz ?: record.channel.centerFrequencyHz
+            recordsByFrequency[key] = record
+        }
+        state = if (recordsByFrequency.isEmpty()) ScannerState.SCANNING else ScannerState.CANDIDATE_DETECTED
+    }
+
     fun nextChannel(excluding: KnownChannel? = null): KnownChannel? {
         if (channels.isEmpty()) {
             return null

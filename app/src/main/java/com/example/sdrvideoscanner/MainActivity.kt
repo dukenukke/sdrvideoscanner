@@ -99,6 +99,9 @@ class MainActivity : AppCompatActivity() {
     private val rfController: RfController = NoOpRfController(debugLogging = false)
     private val gainController = GainController(defaultGainControllerConfig(), rfController)
     private val scanController = ScanController(ChannelPlan.knownChannels)
+    private var maiaWaterfallScanner: MaiaWaterfallScanController? = null
+    private var maiaWaterfallState: MaiaScannerState = MaiaScannerState.STOPPED
+    private var maiaWaterfallStatistics: ScannerStatistics = ScannerStatistics()
     @Volatile
     private var scannerRunning = false
     @Volatile
@@ -494,11 +497,12 @@ class MainActivity : AppCompatActivity() {
         )
         renderSignalTable()
         updateScannerUi()
-        scheduleNextScanStep(0L)
+        startMaiaWaterfallScanner(config)
     }
 
     private fun stopScannerMode() {
         val previousMode = activeMode
+        stopMaiaWaterfallScanner()
         scanSessionId += 1L
         scannerRunning = false
         selectedPlaybackChannel = null
@@ -510,7 +514,7 @@ class MainActivity : AppCompatActivity() {
         scanController.idle()
         updateSleepBlocker()
         renderSignalTable()
-        binding.sampleText.text = "Scanner stopped.\n\nPress Scan to start scanning known channels."
+        binding.sampleText.text = "Scanner stopped.\n\nPress Scan to start Maia waterfall scanning."
         updateScannerUi()
     }
 
@@ -530,7 +534,7 @@ class MainActivity : AppCompatActivity() {
         binding.nextButton.isEnabled = false
         renderSignalTable()
         updateScannerUi()
-        scheduleNextScanStep(0L)
+        startMaiaWaterfallScanner(plutoIqConfig)
     }
 
     private fun updateScannerUi() {
@@ -543,7 +547,13 @@ class MainActivity : AppCompatActivity() {
         updateGainControls()
         binding.scannerStateLabel.text = buildString {
             append("Scanner: ")
-            append(scanController.state.name.lowercase(Locale.US))
+            append(
+                if (activeMode == ActiveMode.PLUTO_SCANNER && maiaWaterfallState != MaiaScannerState.STOPPED) {
+                    maiaWaterfallState.name.lowercase(Locale.US)
+                } else {
+                    scanController.state.name.lowercase(Locale.US)
+                },
+            )
             statusLineChannel()?.let { channel ->
                 append(" | ")
                 append(channel.bandName)
@@ -627,6 +637,146 @@ class MainActivity : AppCompatActivity() {
             ScannerState.ERROR -> currentScannerChannel
             ScannerState.LOCKED_PLAYING -> selectedPlaybackChannel
             ScannerState.IDLE -> null
+        }
+    }
+
+    private fun startMaiaWaterfallScanner(config: PlutoIqConfig) {
+        val sessionId = scanSessionId
+        binding.sampleText.text = "Starting Maia waterfall scanner:\nws://${config.maiaEndpoint()}/waterfall"
+        decodeExecutor.execute {
+            val networkSelection = findPlutoNetworkWithDiagnostics(config.maiaHost.ifBlank { MAIA_DEFAULT_HOST })
+            val plutoNetwork = networkSelection.network
+            if (plutoNetwork == null || plutoNetwork.networkHandle == 0L) {
+                mainHandler.post {
+                    if (sessionId != scanSessionId) {
+                        return@post
+                    }
+                    scannerRunning = false
+                    scanController.error()
+                    binding.sampleText.text = "Maia waterfall scanner failed: Android Ethernet network was not found.\n\n" +
+                        networkSelection.diagnostics
+                    updateSleepBlocker()
+                    updateScannerUi()
+                }
+                return@execute
+            }
+
+            val scanConfig = loadMaiaScanConfigDefaults()
+            val source = MaiaWaterfallWebSocketClient(
+                network = plutoNetwork,
+                host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST },
+                port = config.maiaPort,
+                path = "/waterfall",
+                connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
+                readTimeoutMs = PLUTO_WS_READ_TIMEOUT_MS,
+                onReconnect = {
+                    maiaWaterfallStatistics = maiaWaterfallStatistics.copy(
+                        websocketReconnects = maiaWaterfallStatistics.websocketReconnects + 1,
+                    )
+                },
+                onDroppedFrame = {
+                    maiaWaterfallStatistics = maiaWaterfallStatistics.copy(
+                        droppedFftFrames = maiaWaterfallStatistics.droppedFftFrames + 1,
+                    )
+                },
+            )
+            source.updateRadioMetadata(config.centerFrequencyHz, scanConfig.sampleRateHz, scanConfig.rfBandwidthHz)
+            val apiClient = MaiaApiClient(
+                host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST },
+                port = config.maiaPort,
+                network = plutoNetwork,
+                connectTimeoutMs = MAIA_CONNECT_TIMEOUT_MS,
+                readTimeoutMs = MAIA_READ_TIMEOUT_MS,
+            )
+            val controller = MaiaWaterfallScanController(
+                source = source,
+                tuner = MaiaHttpRadioTuner(apiClient),
+                rfPathController = RfControllerPathAdapter(rfController),
+                onRadioMetadataChanged = { centerHz, sampleRateHz, bandwidthHz ->
+                    source.updateRadioMetadata(centerHz, sampleRateHz, bandwidthHz)
+                },
+                onStateChanged = { state ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        maiaWaterfallState = state
+                        updateScannerUi()
+                    }
+                },
+                onStatisticsChanged = { stats ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        maiaWaterfallStatistics = stats
+                        updateMaiaScannerDiagnostic(scanConfig, stats)
+                    }
+                },
+                onConfirmedSignals = { records ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scanController.replaceRecords(records)
+                        renderSignalTable()
+                        updateScannerUi()
+                    }
+                },
+            )
+            mainHandler.post {
+                if (sessionId != scanSessionId) {
+                    controller.stop()
+                    return@post
+                }
+                maiaWaterfallScanner = controller
+                controller.start(scanConfig, loadMaiaScanRanges())
+                binding.sampleText.text = "Maia waterfall scanner running.\n\n" + maiaScanConfigText(scanConfig)
+            }
+        }
+    }
+
+    private fun stopMaiaWaterfallScanner() {
+        maiaWaterfallScanner?.stop()
+        maiaWaterfallScanner = null
+        maiaWaterfallState = MaiaScannerState.STOPPED
+    }
+
+    private fun updateMaiaScannerDiagnostic(config: MaiaScanConfig, stats: ScannerStatistics) {
+        if (!scannerRunning || selectedPlaybackChannel != null || activeMode != ActiveMode.PLUTO_SCANNER) {
+            return
+        }
+        binding.sampleText.text = buildString {
+            append("Maia waterfall scanner\n")
+            append("state: ${maiaWaterfallState.name.lowercase(Locale.US)}\n")
+            append(maiaScanConfigText(config))
+            append("\n\ncompleted_cycles: ${stats.completedScanCycles}")
+            append("\ncompleted_steps: ${stats.completedScanSteps}")
+            append("\nfailed_steps: ${stats.failedScanSteps}")
+            append("\nreceived_fft_frames: ${stats.receivedFftFrames}")
+            append("\ndropped_fft_frames: ${stats.droppedFftFrames}")
+            append("\ndiscarded_retune_frames: ${stats.discardedRetuneFrames}")
+            append("\nwebsocket_reconnects: ${stats.websocketReconnects}")
+            append("\ncandidates_detected: ${stats.candidatesDetected}")
+            append("\ncandidates_confirmed: ${stats.candidatesConfirmed}")
+            append("\navg_retune_latency_ms: ${String.format(Locale.US, "%.2f", stats.averageRetuneLatencyMs)}")
+            append("\navg_step_duration_ms: ${String.format(Locale.US, "%.2f", stats.averageStepDurationMs)}")
+            append("\nlast_cycle_duration_ms: ${stats.lastCycleDurationMs}")
+        }
+    }
+
+    private fun maiaScanConfigText(config: MaiaScanConfig): String {
+        return buildString {
+            append("sample_rate_hz: ${config.sampleRateHz}")
+            append("\nrf_bandwidth_hz: ${config.rfBandwidthHz}")
+            append("\nfrequency_step_hz: ${config.frequencyStepHz}")
+            append("\nusable_span_hz: ${config.usableSpanHz}")
+            append("\nlo_settling_ms: ${config.loSettlingMs}")
+            append("\nretune_timeout_ms: ${config.retuneTimeoutMs}")
+            append("\ndiscarded_frames_after_retune: ${config.discardedFramesAfterRetune}")
+            append("\nfast_measurement_ms: ${config.fastMeasurementMs}")
+            append("\ncandidate_measurement_ms: ${config.candidateMeasurementMs}")
+            append("\ncandidate_revisits: ${config.requiredPositiveRevisits}/${config.candidateRevisitCount}")
         }
     }
 
@@ -1523,14 +1673,37 @@ class MainActivity : AppCompatActivity() {
                     append(record.channel.channelName)
                     append("\n")
                     append(formatFrequency(record.channel.centerFrequencyHz))
+                    record.measuredFrequencyHz?.let { measured ->
+                        append(" | Measured: ")
+                        append(formatFrequency(measured))
+                    }
                     append(" | ")
                     append(record.signalType.name.lowercase(Locale.US))
+                    record.frequencyOffsetHz?.let { offset ->
+                        append("\nOffset: ")
+                        append(formatFrequency(kotlin.math.abs(offset)))
+                        append(if (offset >= 0) " high" else " low")
+                    }
                     append("\nRSSI: ")
                     append(record.rssiDbfs?.let { String.format(Locale.US, "%.1f dBFS", it) } ?: "--")
+                    record.snrDb?.let {
+                        append(" | SNR: ")
+                        append(String.format(Locale.US, "%.1f dB", it))
+                    }
+                    record.occupiedBandwidthHz?.let {
+                        append(" | BW: ")
+                        append(formatFrequency(it))
+                    }
+                    record.noiseFloorDb?.let {
+                        append("\nNoise: ")
+                        append(String.format(Locale.US, "%.1f dB", it))
+                    }
                     append(" | Dir: ")
                     append(record.direction.name.lowercase(Locale.US))
                     append(" | C: ")
                     append(String.format(Locale.US, "%.2f", record.confidence))
+                    append(" | N: ")
+                    append(record.detectionCount)
                     append(" | Q: ")
                     append(String.format(Locale.US, "%.2f", record.imageQuality))
                 }
@@ -1553,15 +1726,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playDetectedAnalogSignal(record: DetectedSignalRecord) {
+        stopMaiaWaterfallScanner()
         selectedPlaybackChannel = record.channel
         currentScannerChannel = null
-        scannerRunning = true
+        scannerRunning = false
         scanController.lockPlaying()
-        updateCurrentFrequencyLabel(record.channel.centerFrequencyHz)
+        updateCurrentFrequencyLabel(record.measuredFrequencyHz ?: record.channel.centerFrequencyHz)
         updateScannerUi()
         binding.videoFrameContainer.visibility = View.VISIBLE
         record.previewFrame?.let { setVideoFrameBitmap(it) }
-        startSelectedChannelPlayback(record.channel)
+        startSelectedChannelPlayback(
+            if (record.measuredFrequencyHz != null) {
+                record.channel.copy(centerFrequencyHz = record.measuredFrequencyHz)
+            } else {
+                record.channel
+            },
+        )
     }
 
     private fun startSelectedChannelPlayback(channel: KnownChannel) {
@@ -4594,6 +4774,66 @@ class MainActivity : AppCompatActivity() {
                 defaults.hardwareRfdcCorrection,
             ),
         )
+    }
+
+    private fun loadMaiaScanConfigDefaults(): MaiaScanConfig {
+        val defaults = MaiaScanConfig()
+        val preferences = getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
+        return MaiaScanConfig(
+            sampleRateHz = preferences.getLong("maia_scan_sample_rate_hz", defaults.sampleRateHz),
+            rfBandwidthHz = preferences.getLong("maia_scan_rf_bandwidth_hz", defaults.rfBandwidthHz),
+            frequencyStepHz = preferences.getLong("maia_scan_frequency_step_hz", defaults.frequencyStepHz),
+            usableSpanHz = preferences.getLong("maia_scan_usable_span_hz", defaults.usableSpanHz),
+            loSettlingMs = preferences.getLong("maia_scan_lo_settling_ms", defaults.loSettlingMs),
+            discardedFramesAfterRetune = preferences.getInt(
+                "maia_scan_discarded_frames_after_retune",
+                defaults.discardedFramesAfterRetune,
+            ),
+            fastMeasurementMs = preferences.getLong("maia_scan_fast_measurement_ms", defaults.fastMeasurementMs),
+            candidateMeasurementMs = preferences.getLong(
+                "maia_scan_candidate_measurement_ms",
+                defaults.candidateMeasurementMs,
+            ),
+            candidateRevisitCount = preferences.getInt(
+                "maia_scan_candidate_revisit_count",
+                defaults.candidateRevisitCount,
+            ),
+            requiredPositiveRevisits = preferences.getInt(
+                "maia_scan_required_positive_revisits",
+                defaults.requiredPositiveRevisits,
+            ),
+            retuneTimeoutMs = preferences.getLong("maia_scan_retune_timeout_ms", defaults.retuneTimeoutMs),
+            defaultRfPathSettlingMs = preferences.getLong(
+                "maia_scan_default_rf_path_settling_ms",
+                defaults.defaultRfPathSettlingMs,
+            ),
+            minSnrDb = Float.fromBits(preferences.getInt("maia_scan_min_snr_db_bits", defaults.minSnrDb.toBits())),
+            minOccupiedBandwidthHz = preferences.getLong(
+                "maia_scan_min_occupied_bandwidth_hz",
+                defaults.minOccupiedBandwidthHz,
+            ),
+            maxOccupiedBandwidthHz = preferences.getLong(
+                "maia_scan_max_occupied_bandwidth_hz",
+                defaults.maxOccupiedBandwidthHz,
+            ),
+            minAdjacentBins = preferences.getInt("maia_scan_min_adjacent_bins", defaults.minAdjacentBins),
+            dcExclusionBins = preferences.getInt("maia_scan_dc_exclusion_bins", defaults.dcExclusionBins),
+            mergeFrequencyToleranceHz = preferences.getLong(
+                "maia_scan_merge_frequency_tolerance_hz",
+                defaults.mergeFrequencyToleranceHz,
+            ),
+            fpvMatchToleranceHz = preferences.getLong(
+                "maia_scan_fpv_match_tolerance_hz",
+                defaults.fpvMatchToleranceHz,
+            ),
+        )
+    }
+
+    private fun loadMaiaScanRanges(): List<ScanRange> {
+        val preferences = getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
+        return DefaultMaiaScanRanges.ranges.map { range ->
+            range.copy(enabled = preferences.getBoolean("maia_scan_range_${range.id}_enabled", range.enabled))
+        }
     }
 
     private fun savePlutoIqConfigDefaults(config: PlutoIqConfig) {

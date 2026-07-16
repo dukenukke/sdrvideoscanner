@@ -4,6 +4,10 @@ import android.graphics.Bitmap
 
 enum class SignalType {
     ANALOG,
+    ANALOG_FPV,
+    NARROWBAND,
+    WIDEBAND_UNKNOWN,
+    INTERFERENCE,
     DIGITAL,
     UNKNOWN,
 }
@@ -53,4 +57,15 @@ data class DetectedSignalRecord(
     val confidence: Double,
     val diagnostic: String,
     val imageQuality: Double = 0.0,
+    val measuredFrequencyHz: Long? = null,
+    val nominalFrequencyHz: Long? = null,
+    val frequencyOffsetHz: Long? = null,
+    val peakPowerDb: Float? = null,
+    val noiseFloorDb: Float? = null,
+    val snrDb: Float? = null,
+    val occupiedBandwidthHz: Long? = null,
+    val firstSeenTimestampMs: Long? = null,
+    val detectionCount: Int = 1,
+    val status: String = "detected",
+    val scanRangeId: String? = null,
 )
