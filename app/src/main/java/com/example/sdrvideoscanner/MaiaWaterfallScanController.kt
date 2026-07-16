@@ -1,0 +1,321 @@
+package com.example.sdrvideoscanner
+
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+
+class MaiaWaterfallScanController(
+    private val source: WaterfallSource,
+    private val tuner: IRadioTuner,
+    private val rfPathController: RfPathController = NoOpRfPathController(),
+    private val fpvChannelRepository: FpvChannelRepository = ChannelPlanFpvChannelRepository(),
+    private val classifier: AnalogFpvHeuristicClassifier = AnalogFpvHeuristicClassifier(),
+    private val onRadioMetadataChanged: (centerFrequencyHz: Long, sampleRateHz: Long, bandwidthHz: Long?) -> Unit = { _, _, _ -> },
+    private val onStateChanged: (MaiaScannerState) -> Unit = {},
+    private val onStatisticsChanged: (ScannerStatistics) -> Unit = {},
+    private val onConfirmedSignals: (List<DetectedSignalRecord>) -> Unit = {},
+    private val clockNs: () -> Long = { System.nanoTime() },
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var job: Job? = null
+    private var paused = false
+    private var state = MaiaScannerState.STOPPED
+    private var statistics = ScannerStatistics()
+    private val confirmedSignals = linkedMapOf<Long, DetectedSignalRecord>()
+
+    fun start(config: MaiaScanConfig, ranges: List<ScanRange>) {
+        stop()
+        paused = false
+        job = scope.launch {
+            runScanner(config, ranges)
+        }
+    }
+
+    fun stop() {
+        job?.cancel()
+        job = null
+        paused = false
+        setState(MaiaScannerState.STOPPED)
+        scope.launch {
+            source.disconnect()
+        }
+    }
+
+    fun pause() {
+        paused = true
+        setState(MaiaScannerState.PAUSED)
+    }
+
+    fun resume() {
+        paused = false
+    }
+
+    fun statistics(): ScannerStatistics = statistics
+
+    private suspend fun runScanner(config: MaiaScanConfig, ranges: List<ScanRange>) {
+        try {
+            setState(MaiaScannerState.CONNECTING)
+            source.connect()
+            setState(MaiaScannerState.CONFIGURING)
+            tuner.configure(config.sampleRateHz, config.rfBandwidthHz)
+            val windows = MaiaScanPlanner.generateWindows(ranges, config)
+            val detector = SpectralCandidateDetector(config)
+
+            while (currentCoroutineContext().isActive && windows.isNotEmpty()) {
+                val cycleStartNs = clockNs()
+                val passCandidates = mutableListOf<SpectralCandidate>()
+                setState(MaiaScannerState.FAST_SCAN)
+                for (window in windows) {
+                    waitIfPaused()
+                    val stepStartNs = clockNs()
+                    selectRfPathIfNeeded(window, config)
+                    val measurement = measureWindow(window, config, config.fastMeasurementMs)
+                    if (measurement == null) {
+                        statistics = statistics.copy(failedScanSteps = statistics.failedScanSteps + 1)
+                        onStatisticsChanged(statistics)
+                        continue
+                    }
+                    setState(MaiaScannerState.ANALYZING)
+                    passCandidates += detector.detect(measurement, window)
+                    statistics = statistics.copy(
+                        completedScanSteps = statistics.completedScanSteps + 1,
+                        candidatesDetected = statistics.candidatesDetected + passCandidates.size,
+                        averageStepDurationMs = rollingAverage(
+                            statistics.averageStepDurationMs,
+                            statistics.completedScanSteps,
+                            (clockNs() - stepStartNs) / 1_000_000.0,
+                        ),
+                    )
+                    onStatisticsChanged(statistics)
+                }
+
+                val merged = CandidateMerger.merge(passCandidates, config.mergeFrequencyToleranceHz)
+                val confirmed = revisitCandidates(merged, config)
+                publishConfirmed(confirmed, config)
+                statistics = statistics.copy(
+                    completedScanCycles = statistics.completedScanCycles + 1,
+                    candidatesConfirmed = statistics.candidatesConfirmed + confirmed.size,
+                    lastCycleDurationMs = ((clockNs() - cycleStartNs) / 1_000_000L),
+                )
+                onStatisticsChanged(statistics)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            setState(MaiaScannerState.ERROR)
+        } finally {
+            source.disconnect()
+            if (state != MaiaScannerState.ERROR) {
+                setState(MaiaScannerState.STOPPED)
+            }
+        }
+    }
+
+    private suspend fun selectRfPathIfNeeded(window: ScanWindow, config: MaiaScanConfig) {
+        val path = window.rfPathId ?: return
+        if (rfPathController.getCurrentPath() == path) {
+            return
+        }
+        rfPathController.selectPath(path)
+        delay(config.defaultRfPathSettlingMs)
+    }
+
+    private suspend fun measureWindow(
+        window: ScanWindow,
+        config: MaiaScanConfig,
+        measurementMs: Long,
+    ): SpectrumMeasurement? {
+        setState(MaiaScannerState.RETUNING)
+        val retuneStartNs = clockNs()
+        tuner.tune(window.centerFrequencyHz)
+        setState(MaiaScannerState.SETTLING)
+        delay(config.loSettlingMs)
+        onRadioMetadataChanged(window.centerFrequencyHz, config.sampleRateHz, config.rfBandwidthHz)
+
+        val firstValid = waitForFirstValidFrame(window.centerFrequencyHz, retuneStartNs, config)
+            ?: return null
+        val retuneLatencyMs = (firstValid.timestampNs - retuneStartNs) / 1_000_000.0
+        statistics = statistics.copy(
+            averageRetuneLatencyMs = rollingAverage(
+                statistics.averageRetuneLatencyMs,
+                statistics.completedScanSteps + statistics.failedScanSteps,
+                retuneLatencyMs,
+            ),
+        )
+
+        setState(MaiaScannerState.COLLECTING)
+        val aggregator = SpectrumAggregator(window.centerFrequencyHz, config.sampleRateHz)
+        aggregator.add(firstValid)
+        val endNs = clockNs() + measurementMs * 1_000_000L
+        while (clockNs() < endNs && currentCoroutineContext().isActive) {
+            val remainingMs = ((endNs - clockNs()) / 1_000_000L).coerceAtLeast(1L)
+            val frame = withTimeoutOrNull(remainingMs) { source.frames().first() } ?: break
+            statistics = statistics.copy(receivedFftFrames = statistics.receivedFftFrames + 1)
+            if (isFrameValidForRetune(frame, window.centerFrequencyHz, retuneStartNs)) {
+                aggregator.add(frame)
+            } else {
+                statistics = statistics.copy(droppedFftFrames = statistics.droppedFftFrames + 1)
+            }
+        }
+        return aggregator.toMeasurement()
+    }
+
+    private suspend fun waitForFirstValidFrame(
+        centerFrequencyHz: Long,
+        retuneStartNs: Long,
+        config: MaiaScanConfig,
+    ): WaterfallFrame? {
+        val deadlineNs = clockNs() + config.retuneTimeoutMs * 1_000_000L
+        var discarded = 0
+        while (clockNs() < deadlineNs && currentCoroutineContext().isActive) {
+            val remainingMs = ((deadlineNs - clockNs()) / 1_000_000L).coerceAtLeast(1L)
+            val frame = withTimeoutOrNull(remainingMs) { source.frames().first() } ?: return null
+            statistics = statistics.copy(receivedFftFrames = statistics.receivedFftFrames + 1)
+            if (!isFrameValidForRetune(frame, centerFrequencyHz, retuneStartNs)) {
+                statistics = statistics.copy(droppedFftFrames = statistics.droppedFftFrames + 1)
+                continue
+            }
+            if (discarded < config.discardedFramesAfterRetune) {
+                discarded += 1
+                statistics = statistics.copy(discardedRetuneFrames = statistics.discardedRetuneFrames + 1)
+                continue
+            }
+            return frame
+        }
+        return null
+    }
+
+    private fun isFrameValidForRetune(frame: WaterfallFrame, centerFrequencyHz: Long, retuneStartNs: Long): Boolean {
+        return WaterfallFrameValidator.isValidForRetune(frame, centerFrequencyHz, retuneStartNs)
+    }
+
+    private suspend fun revisitCandidates(
+        candidates: List<SpectralCandidate>,
+        config: MaiaScanConfig,
+    ): List<ConfirmedSignal> {
+        if (candidates.isEmpty()) {
+            return emptyList()
+        }
+        setState(MaiaScannerState.CANDIDATE_REVISIT)
+        val confirmed = mutableListOf<ConfirmedSignal>()
+        val prioritized = candidates.sortedWith(compareByDescending<SpectralCandidate> { it.snrDb }.thenByDescending { it.confidence })
+        for (candidate in prioritized) {
+            waitIfPaused()
+            if (candidate.occupiedBandwidthHz < config.minOccupiedBandwidthHz) {
+                continue
+            }
+            var positives = 0
+            var best = candidate
+            repeat(config.candidateRevisitCount) {
+                val window = ScanWindow(
+                    rangeId = candidate.scanRangeId,
+                    centerFrequencyHz = candidate.rawCenterFrequencyHz,
+                    reliableStartFrequencyHz = candidate.rawCenterFrequencyHz - config.usableSpanHz / 2L,
+                    reliableEndFrequencyHz = candidate.rawCenterFrequencyHz + config.usableSpanHz / 2L,
+                    rfPathId = null,
+                )
+                val measurement = measureWindow(window, config, config.candidateMeasurementMs)
+                val revisitCandidates = measurement?.let { SpectralCandidateDetector(config).detect(it, window) }.orEmpty()
+                val matching = revisitCandidates.firstOrNull {
+                    it.overlapsOrNear(candidate, config.mergeFrequencyToleranceHz)
+                }
+                if (matching != null) {
+                    positives += 1
+                    best = CandidateMerger.merge(listOf(best, matching), config.mergeFrequencyToleranceHz).first()
+                }
+            }
+            if (RevisitVoting.isConfirmed(positives, config.candidateRevisitCount, config.requiredPositiveRevisits)) {
+                val match = fpvChannelRepository.findNearest(best.rawCenterFrequencyHz, config.fpvMatchToleranceHz)
+                val classification = classifier.classify(best.copy(detectionCount = maxOf(best.detectionCount, positives)), match)
+                confirmed.add(ConfirmedSignal(best.copy(detectionCount = maxOf(best.detectionCount, positives)), match, classification))
+            }
+        }
+        return confirmed
+    }
+
+    private fun publishConfirmed(signals: List<ConfirmedSignal>, config: MaiaScanConfig) {
+        for (signal in signals) {
+            val match = signal.channelMatch
+            val displayFrequency = if (match?.withinTolerance == true) match.nominalFrequencyHz else signal.candidate.rawCenterFrequencyHz
+            val channel = KnownChannel(
+                bandName = match?.bandName ?: signal.candidate.scanRangeId,
+                channelName = match?.channelName ?: "Unaligned ${displayFrequency / 1_000_000} MHz",
+                centerFrequencyHz = displayFrequency,
+                expectedSignalType = signal.classification.type,
+                rfFrontendProfileId = signal.candidate.scanRangeId,
+            )
+            val key = signal.candidate.rawCenterFrequencyHz
+            val nowMs = System.currentTimeMillis()
+            val firstSeenMs = signal.candidate.firstSeenNs / 1_000_000L
+            confirmedSignals[key] = DetectedSignalRecord(
+                channel = channel,
+                signalType = if (signal.classification.type == SignalType.ANALOG_FPV) SignalType.ANALOG else signal.classification.type,
+                rssiDbfs = signal.candidate.peakPowerDb.toDouble(),
+                direction = DirectionEstimate.UNKNOWN,
+                previewFrame = null,
+                lastSeenTimestampMs = nowMs,
+                confidence = signal.classification.confidence.toDouble(),
+                diagnostic = buildDiagnostic(signal, config),
+                imageQuality = signal.classification.confidence.toDouble(),
+                measuredFrequencyHz = signal.candidate.rawCenterFrequencyHz,
+                nominalFrequencyHz = match?.nominalFrequencyHz?.takeIf { match.withinTolerance },
+                frequencyOffsetHz = match?.offsetHz,
+                peakPowerDb = signal.candidate.peakPowerDb,
+                noiseFloorDb = signal.candidate.noiseFloorDb,
+                snrDb = signal.candidate.snrDb,
+                occupiedBandwidthHz = signal.candidate.occupiedBandwidthHz,
+                firstSeenTimestampMs = firstSeenMs,
+                detectionCount = signal.candidate.detectionCount,
+                status = "confirmed",
+                scanRangeId = signal.candidate.scanRangeId,
+            )
+        }
+        onConfirmedSignals(confirmedSignals.values.toList())
+    }
+
+    private fun buildDiagnostic(signal: ConfirmedSignal, config: MaiaScanConfig): String {
+        return buildString {
+            append("scanner_stage: maia_waterfall\n")
+            append("raw_measured_frequency_hz: ${signal.candidate.rawCenterFrequencyHz}\n")
+            append("peak_frequency_hz: ${signal.candidate.peakFrequencyHz}\n")
+            append("occupied_bandwidth_hz: ${signal.candidate.occupiedBandwidthHz}\n")
+            append("snr_db: ${signal.candidate.snrDb}\n")
+            append("noise_floor_db: ${signal.candidate.noiseFloorDb}\n")
+            append("classification: ${signal.classification.type}\n")
+            append("classification_reasons: ${signal.classification.reasons.joinToString("; ")}\n")
+            append("fpv_match_tolerance_hz: ${config.fpvMatchToleranceHz}\n")
+            signal.channelMatch?.let {
+                append("fpv_match: ${it.bandName}/${it.channelName}\n")
+                append("nominal_frequency_hz: ${it.nominalFrequencyHz}\n")
+                append("frequency_offset_hz: ${it.offsetHz}\n")
+                append("within_tolerance: ${it.withinTolerance}\n")
+            }
+        }
+    }
+
+    private suspend fun waitIfPaused() {
+        while (paused && currentCoroutineContext().isActive) {
+            delay(25L)
+        }
+    }
+
+    private fun setState(next: MaiaScannerState) {
+        state = next
+        onStateChanged(next)
+    }
+
+    private fun rollingAverage(previousAverage: Double, previousCount: Long, next: Double): Double {
+        if (previousCount <= 0L) {
+            return next
+        }
+        return (previousAverage * previousCount.toDouble() + next) / (previousCount + 1L).toDouble()
+    }
+}
