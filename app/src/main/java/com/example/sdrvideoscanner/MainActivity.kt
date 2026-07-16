@@ -462,6 +462,15 @@ class MainActivity : AppCompatActivity() {
         selectedPlaybackChannel = null
         stopSpectrum()
         stopPlayback()
+        if (requestPlutoUsbPermissionForNetworkIfNeeded(
+                action = PlutoUsbAction.SCANNER,
+                standard = VideoStandard.AUTO,
+                config = plutoIqConfig,
+                description = "Pluto scanner",
+            )
+        ) {
+            return
+        }
         startScannerModeAfterPreflight(plutoIqConfig)
     }
 
