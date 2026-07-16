@@ -29,6 +29,9 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
@@ -40,6 +43,7 @@ import com.example.sdrvideoscanner.databinding.DialogPlutoIqConfigBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -55,6 +59,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
@@ -102,6 +107,21 @@ class MainActivity : AppCompatActivity() {
     private var maiaWaterfallScanner: MaiaWaterfallScanController? = null
     private var maiaWaterfallState: MaiaScannerState = MaiaScannerState.STOPPED
     private var maiaWaterfallStatistics: ScannerStatistics = ScannerStatistics()
+    private var scannerWebViewReady = false
+    private var scannerWebSpectrumVisible = true
+    private var scannerWebSelectedSignalId: Long? = null
+    private var scannerWebCurrentLoFrequencyHz: Long? = null
+    private var scannerWebCurrentSampleRateHz: Long? = null
+    private var scannerWebCurrentBandwidthHz: Long? = null
+    private var scannerWebActiveWindow: ScanWindow? = null
+    private var scannerWebWindowIndex = 0
+    private var scannerWebWindowTotal = 0
+    private var scannerWebNoiseFloorDb: Float? = null
+    private var scannerWebDiagnostics: String? = null
+    private var scannerWebScanConfigOverride: MaiaScanConfig? = null
+    private var scannerWebScanRangesOverride: List<ScanRange>? = null
+    private val scannerWebEvents = ArrayDeque<ScannerEventRecord>()
+    private var lastSpectrumWebUpdateNs = 0L
     @Volatile
     private var scannerRunning = false
     @Volatile
@@ -179,6 +199,7 @@ class MainActivity : AppCompatActivity() {
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        setupScannerWebView()
         plutoMonitorThread = HandlerThread("PlutoConnectionMonitor").apply { start() }
         plutoMonitorHandler = Handler(plutoMonitorThread.looper)
         startPlutoConnectionMonitor()
@@ -245,6 +266,145 @@ class MainActivity : AppCompatActivity() {
             insets
         }
         ViewCompat.requestApplyInsets(binding.root)
+    }
+
+    private fun setupScannerWebView() {
+        val webView = binding.scannerWebView
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = false
+            databaseEnabled = false
+            cacheMode = WebSettings.LOAD_NO_CACHE
+            allowFileAccess = true
+            allowContentAccess = false
+            allowFileAccessFromFileURLs = false
+            allowUniversalAccessFromFileURLs = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        }
+        webView.isSaveEnabled = false
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                scannerWebViewReady = true
+                appendScannerWebEvent("system", "Scanner dashboard loaded from local assets")
+                emitScannerSnapshot()
+            }
+        }
+        webView.addJavascriptInterface(
+            ScannerWebBridge(scannerWebBridgeHandler()),
+            "AndroidScanner",
+        )
+        webView.loadUrl(SCANNER_WEB_URL)
+    }
+
+    private fun scannerWebBridgeHandler(): ScannerWebBridge.Handler {
+        return object : ScannerWebBridge.Handler {
+            override fun startScan() = runOnMain {
+                if (playbackRunning) {
+                    releaseSignalToScanner()
+                } else if (!scannerRunning) {
+                    startScannerMode()
+                }
+                scannerWebSpectrumVisible = true
+                appendScannerWebEvent("system", "Scan requested from dashboard")
+                emitScannerSnapshot()
+            }
+
+            override fun pauseScan() = runOnMain {
+                maiaWaterfallScanner?.pause()
+                scannerRunning = false
+                appendScannerWebEvent("warning", "Scan paused")
+                emitScannerSnapshot()
+            }
+
+            override fun resumeScan() = runOnMain {
+                if (maiaWaterfallScanner != null) {
+                    scannerRunning = true
+                    maiaWaterfallScanner?.resume()
+                } else {
+                    startScannerMode()
+                }
+                scannerWebSpectrumVisible = true
+                appendScannerWebEvent("success", "Scan resumed")
+                emitScannerSnapshot()
+            }
+
+            override fun stopScan() = runOnMain {
+                stopScannerMode()
+                appendScannerWebEvent("warning", "Scan stopped")
+                emitScannerSnapshot()
+            }
+
+            override fun skipSignal() = runOnMain {
+                releaseSignalToScanner()
+                appendScannerWebEvent("warning", "Signal skipped; scanning resumed")
+            }
+
+            override fun selectSignal(id: Long) = runOnMain {
+                scannerWebSelectedSignalId = id
+                emitScannerSnapshot()
+            }
+
+            override fun lockSignal(id: Long) = runOnMain {
+                scannerWebSelectedSignalId = id
+                val record = signalRecordByWebId(id)
+                if (!ScannerModeTransitionPolicy.lockAllowed(record)) {
+                    appendScannerWebEvent("warning", "Video lock rejected for non-Analog-FPV signal")
+                    emitScannerSnapshot()
+                    return@runOnMain
+                }
+                scannerWebSpectrumVisible = false
+                playDetectedAnalogSignal(record!!)
+                appendScannerWebEvent("success", "Analog FPV signal locked for native video decode")
+                emitScannerSnapshot()
+            }
+
+            override fun releaseSignal() = runOnMain {
+                releaseSignalToScanner()
+            }
+
+            override fun showSpectrum() = runOnMain {
+                scannerWebSpectrumVisible = true
+                if (playbackRunning) {
+                    releaseSignalToScanner()
+                } else {
+                    binding.videoFrameContainer.visibility = View.GONE
+                    emitScannerSnapshot()
+                }
+            }
+
+            override fun showVideo() = runOnMain {
+                val id = scannerWebSelectedSignalId
+                val record = id?.let { signalRecordByWebId(it) }
+                if (!ScannerModeTransitionPolicy.lockAllowed(record)) {
+                    appendScannerWebEvent("warning", "Decoded video is available only for Analog FPV signals")
+                    emitScannerSnapshot()
+                    return@runOnMain
+                }
+                scannerWebSpectrumVisible = false
+                playDetectedAnalogSignal(record!!)
+                emitScannerSnapshot()
+            }
+
+            override fun applyScanConfig(config: ValidatedScanCommandConfig) = runOnMain {
+                scannerWebScanConfigOverride = config.config
+                scannerWebScanRangesOverride = config.ranges
+                appendScannerWebEvent("system", "Scan configuration applied from dashboard")
+                if (scannerRunning || maiaWaterfallScanner != null) {
+                    stopScannerMode()
+                    startScannerMode()
+                }
+                emitScannerSnapshot()
+            }
+        }
+    }
+
+    private fun runOnMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action()
+        } else {
+            mainHandler.post(action)
+        }
     }
 
     private fun showMainMenu() {
@@ -661,7 +821,8 @@ class MainActivity : AppCompatActivity() {
                 return@execute
             }
 
-            val scanConfig = loadMaiaScanConfigDefaults()
+            val scanConfig = scannerWebScanConfigOverride ?: loadMaiaScanConfigDefaults()
+            val scanRanges = scannerWebScanRangesOverride ?: loadMaiaScanRanges()
             val source = MaiaWaterfallWebSocketClient(
                 network = plutoNetwork,
                 host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST },
@@ -694,6 +855,15 @@ class MainActivity : AppCompatActivity() {
                 rfPathController = RfControllerPathAdapter(rfController),
                 onRadioMetadataChanged = { centerHz, sampleRateHz, bandwidthHz ->
                     source.updateRadioMetadata(centerHz, sampleRateHz, bandwidthHz)
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebCurrentLoFrequencyHz = centerHz
+                        scannerWebCurrentSampleRateHz = sampleRateHz
+                        scannerWebCurrentBandwidthHz = bandwidthHz
+                        emitScannerSnapshot()
+                    }
                 },
                 onStateChanged = { state ->
                     mainHandler.post {
@@ -702,6 +872,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         maiaWaterfallState = state
                         updateScannerUi()
+                        emitScannerSnapshot()
                     }
                 },
                 onStatisticsChanged = { stats ->
@@ -711,6 +882,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         maiaWaterfallStatistics = stats
                         updateMaiaScannerDiagnostic(scanConfig, stats)
+                        emitScannerSnapshot()
                     }
                 },
                 onConfirmedSignals = { records ->
@@ -721,7 +893,32 @@ class MainActivity : AppCompatActivity() {
                         scanController.replaceRecords(records)
                         renderSignalTable()
                         updateScannerUi()
+                        appendScannerWebEvent("success", "Confirmed signals updated: ${records.size}")
+                        emitScannerSnapshot()
                     }
+                },
+                onScanWindowChanged = { window, index, total ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebActiveWindow = window
+                        scannerWebWindowIndex = index
+                        scannerWebWindowTotal = total
+                        emitScannerSnapshot()
+                    }
+                },
+                onMeasurement = { measurement ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebNoiseFloorDb = measurement.noiseFloorDb
+                        emitScannerSnapshot()
+                    }
+                },
+                onSpectrumFrame = { frame ->
+                    maybeSendSpectrumFrameToWeb(sessionId, frame)
                 },
             )
             mainHandler.post {
@@ -730,7 +927,7 @@ class MainActivity : AppCompatActivity() {
                     return@post
                 }
                 maiaWaterfallScanner = controller
-                controller.start(scanConfig, loadMaiaScanRanges())
+                controller.start(scanConfig, scanRanges)
                 binding.sampleText.text = "Maia waterfall scanner running.\n\n" + maiaScanConfigText(scanConfig)
             }
         }
@@ -778,6 +975,134 @@ class MainActivity : AppCompatActivity() {
             append("\ncandidate_measurement_ms: ${config.candidateMeasurementMs}")
             append("\ncandidate_revisits: ${config.requiredPositiveRevisits}/${config.candidateRevisitCount}")
         }
+    }
+
+    private fun emitScannerSnapshot() {
+        if (!scannerWebViewReady) {
+            return
+        }
+        val snapshot = buildScannerWebSnapshot()
+        evaluateScannerJavascript("window.scannerUi && window.scannerUi.applySnapshot(${snapshot.toJson()});")
+    }
+
+    private fun buildScannerWebSnapshot(): ScannerWebSnapshot {
+        return ScannerWebSnapshot(
+            scannerState = when {
+                playbackRunning -> "VIDEO_DECODE"
+                maiaWaterfallState != MaiaScannerState.STOPPED -> maiaWaterfallState.name
+                scannerRunning -> scanController.state.name
+                else -> "STOPPED"
+            },
+            operatingMode = when {
+                playbackRunning -> SdrOperatingMode.VIDEO_DECODE.name
+                scannerRunning || maiaWaterfallScanner != null -> SdrOperatingMode.MAIA_SCAN.name
+                else -> SdrOperatingMode.IDLE.name
+            },
+            activeScanRange = scannerWebActiveWindow?.rangeId,
+            currentLoFrequencyHz = scannerWebCurrentLoFrequencyHz
+                ?: selectedPlaybackChannel?.centerFrequencyHz
+                ?: plutoIqConfig.centerFrequencyHz,
+            scanWindowIndex = scannerWebWindowIndex,
+            scanWindowTotal = scannerWebWindowTotal,
+            statistics = maiaWaterfallStatistics,
+            noiseFloorDb = scannerWebNoiseFloorDb,
+            retuneLatencyMs = maiaWaterfallStatistics.averageRetuneLatencyMs,
+            confirmedSignals = scanController.records(),
+            diagnostics = scannerWebDiagnostics ?: binding.sampleText.text?.toString(),
+            events = scannerWebEvents.toList(),
+        )
+    }
+
+    private fun appendScannerWebEvent(type: String, message: String) {
+        val event = ScannerEventRecord(
+            type = type,
+            message = message,
+            timestampMs = System.currentTimeMillis(),
+        )
+        scannerWebEvents.addFirst(event)
+        while (scannerWebEvents.size > SCANNER_WEB_MAX_EVENTS) {
+            scannerWebEvents.removeLast()
+        }
+        if (scannerWebViewReady) {
+            evaluateScannerJavascript("window.scannerUi && window.scannerUi.appendEvent(${event.toJson()});")
+        }
+    }
+
+    private fun maybeSendSpectrumFrameToWeb(sessionId: Long, frame: WaterfallFrame) {
+        if (!scannerWebSpectrumVisible || !scannerWebViewReady) {
+            return
+        }
+        val nowNs = System.nanoTime()
+        if (nowNs - lastSpectrumWebUpdateNs < SCANNER_WEB_SPECTRUM_THROTTLE_NS) {
+            return
+        }
+        lastSpectrumWebUpdateNs = nowNs
+        val downsampled = downsampleSpectrum(frame.powerDb, SCANNER_WEB_MAX_SPECTRUM_BINS)
+        val json = JSONObject()
+            .put("schemaVersion", 1)
+            .put("centerFrequencyHz", frame.centerFrequencyHz)
+            .put("sampleRateHz", frame.sampleRateHz)
+            .put("bandwidthHz", frame.bandwidthHz)
+            .put("sequenceNumber", frame.sequenceNumber)
+            .put("timestampNs", frame.timestampNs)
+            .put("binCount", frame.binCount)
+            .put("powerDb", JSONArray().also { array ->
+                downsampled.forEach { array.put(it.toDouble()) }
+            })
+        mainHandler.post {
+            if (sessionId != scanSessionId || !scannerWebSpectrumVisible || !scannerWebViewReady) {
+                return@post
+            }
+            evaluateScannerJavascript("window.scannerUi && window.scannerUi.updateSpectrum($json);")
+        }
+    }
+
+    private fun downsampleSpectrum(values: FloatArray, maxBins: Int): FloatArray {
+        if (values.size <= maxBins) {
+            return values.copyOf()
+        }
+        val result = FloatArray(maxBins)
+        for (index in result.indices) {
+            val start = (index * values.size) / maxBins
+            val end = (((index + 1) * values.size) / maxBins).coerceAtLeast(start + 1)
+            var max = Float.NEGATIVE_INFINITY
+            for (sourceIndex in start until end) {
+                if (values[sourceIndex] > max) {
+                    max = values[sourceIndex]
+                }
+            }
+            result[index] = max
+        }
+        return result
+    }
+
+    private fun evaluateScannerJavascript(script: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { evaluateScannerJavascript(script) }
+            return
+        }
+        if (!scannerWebViewReady) {
+            return
+        }
+        binding.scannerWebView.evaluateJavascript(script, null)
+    }
+
+    private fun signalRecordByWebId(id: Long): DetectedSignalRecord? {
+        return scanController.records().firstOrNull { (it.measuredFrequencyHz ?: it.channel.centerFrequencyHz) == id }
+    }
+
+    private fun releaseSignalToScanner() {
+        stopPlayback()
+        selectedPlaybackChannel = null
+        scannerWebSpectrumVisible = true
+        binding.videoFrameContainer.visibility = View.GONE
+        if (!scannerRunning) {
+            startScannerMode()
+        } else {
+            maiaWaterfallScanner?.resume()
+        }
+        appendScannerWebEvent("system", "Video released; scanning resumed")
+        emitScannerSnapshot()
     }
 
     private fun scheduleNextScanStep(delayMs: Long = SCAN_STEP_DELAY_MS) {
@@ -1941,11 +2266,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopPlutoConnectionMonitor()
+        stopMaiaWaterfallScanner()
         stopPlayback()
         stopSpectrum()
         activeMode = ActiveMode.NONE
         scannerRunning = false
         updateSleepBlocker()
+        if (::binding.isInitialized) {
+            binding.scannerWebView.removeJavascriptInterface("AndroidScanner")
+            binding.scannerWebView.stopLoading()
+            binding.scannerWebView.webViewClient = WebViewClient()
+            binding.scannerWebView.destroy()
+        }
         if (usbPermissionReceiverRegistered) {
             unregisterReceiver(usbPermissionReceiver)
             usbPermissionReceiverRegistered = false
@@ -5464,6 +5796,10 @@ class MainActivity : AppCompatActivity() {
         private const val PLUTO_WS_RECEIVE_BUFFER_MIN_MS = 50
         private const val PLUTO_WS_RECEIVE_BUFFER_MAX_MS = 150
         private const val PLUTO_WS_RECEIVE_BUFFER_DEFAULT_MS = 120
+        private const val SCANNER_WEB_URL = "file:///android_asset/ui/sdr-scanner-panel.html"
+        private const val SCANNER_WEB_MAX_EVENTS = 60
+        private const val SCANNER_WEB_MAX_SPECTRUM_BINS = 256
+        private const val SCANNER_WEB_SPECTRUM_THROTTLE_NS = 200_000_000L
         private const val MENU_PLAY_PLUTO_IIO_CS8 = 1
         private const val MENU_STOP = 2
         private const val MENU_SETUP_IQ = 3

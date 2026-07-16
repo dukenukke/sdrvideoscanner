@@ -1,0 +1,1985 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SDR Video Scanner — Control Panel</title>
+  <style>
+    :root {
+      --bg: #080c11;
+      --panel: #0e141c;
+      --panel-raised: #121a24;
+      --panel-soft: #101821;
+      --line: #223040;
+      --line-bright: #34485d;
+      --text: #edf5f7;
+      --muted: #8fa2ae;
+      --muted-2: #607381;
+      --cyan: #56e5d1;
+      --cyan-soft: rgba(86, 229, 209, .12);
+      --green: #87ed9b;
+      --amber: #ffcc6a;
+      --red: #ff7f87;
+      --blue: #7aa8ff;
+      --purple: #b894ff;
+      --shadow: 0 20px 55px rgba(0, 0, 0, .32);
+      --radius-lg: 18px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: var(--bg); }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(47, 116, 126, .16), transparent 30rem),
+        radial-gradient(circle at 88% 14%, rgba(59, 74, 122, .13), transparent 26rem),
+        var(--bg);
+    }
+
+    button, input, select { font: inherit; }
+
+    button { color: inherit; }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 2px;
+    }
+
+    .app-shell {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 70px;
+      margin-bottom: 16px;
+      padding: 12px 14px 12px 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: rgba(14, 20, 28, .9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      min-width: 0;
+      padding: 2px 5px 2px 2px;
+      border: 0;
+      border-radius: 12px;
+      color: inherit;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .brand:hover { background: rgba(86, 229, 209, .055); }
+    .brand:hover .brand-mark { border-color: rgba(86, 229, 209, .65); }
+
+    .brand-mark {
+      position: relative;
+      width: 38px;
+      height: 38px;
+      flex: 0 0 38px;
+      border: 1px solid rgba(86, 229, 209, .32);
+      border-radius: 11px;
+      background: var(--cyan-soft);
+      overflow: hidden;
+    }
+
+    .brand-mark::before,
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      inset-inline: 8px;
+      border: 2px solid var(--cyan);
+      border-top: 0;
+      border-left-color: transparent;
+      border-right-color: transparent;
+      border-radius: 50%;
+    }
+
+    .brand-mark::before { inset-block: 9px 12px; transform: rotate(-8deg); }
+    .brand-mark::after { inset-block: 14px 8px; transform: rotate(10deg); opacity: .55; }
+
+    .brand-title {
+      display: block;
+      margin: 0;
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .brand-subtitle {
+      display: block;
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .topbar-status,
+    .topbar-actions,
+    .status-cluster {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .device-pill,
+    .status-pill,
+    .mini-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel-soft);
+      font-family: var(--mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .status-pill {
+      color: var(--green);
+      border-color: rgba(135, 237, 155, .22);
+      background: rgba(135, 237, 155, .07);
+    }
+
+    .status-pill.paused { color: var(--amber); border-color: rgba(255, 204, 106, .24); background: rgba(255, 204, 106, .08); }
+    .status-pill.locked { color: var(--cyan); border-color: rgba(86, 229, 209, .28); background: rgba(86, 229, 209, .09); }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 11px currentColor;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 14px;
+      border: 1px solid var(--line-bright);
+      border-radius: 10px;
+      color: var(--text);
+      background: #16212c;
+      cursor: pointer;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+
+    .btn:hover { border-color: #49657b; background: #1a2935; }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+    .btn-primary { border-color: rgba(86, 229, 209, .42); color: #031311; background: var(--cyan); font-weight: 720; }
+    .btn-primary:hover { border-color: #8df3e4; background: #74ead9; }
+    .btn-ghost { border-color: transparent; color: var(--muted); background: transparent; }
+    .btn-ghost:hover { color: var(--text); border-color: var(--line); background: var(--panel-soft); }
+    .btn-small { min-height: 31px; padding: 0 10px; border-radius: 8px; font-size: 12px; }
+    .btn-icon { width: 38px; padding: 0; }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 310px);
+      gap: 16px;
+      align-items: start;
+    }
+
+    body.menu-open { overflow: hidden; }
+
+    .menu-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(0, 0, 0, .58);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+      backdrop-filter: blur(3px);
+    }
+
+    .menu-backdrop.open { opacity: 1; pointer-events: auto; }
+
+    .main-menu-drawer {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 50;
+      display: flex;
+      width: min(390px, calc(100vw - 22px));
+      border-right: 1px solid var(--line-bright);
+      color: var(--text);
+      background: #0b1118;
+      box-shadow: 28px 0 70px rgba(0, 0, 0, .48);
+      transform: translateX(-102%);
+      transition: transform .24s ease;
+      flex-direction: column;
+    }
+
+    .main-menu-drawer.open { transform: translateX(0); }
+
+    .main-menu-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 76px;
+      padding: 14px 16px 14px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .main-menu-title { margin: 0; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; }
+    .main-menu-subtitle { margin: 3px 0 0; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+    .main-menu-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .main-menu-body .panel-section { padding: 20px; }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: rgba(14, 20, 28, .92);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-section { padding: 17px; }
+    .panel-section + .panel-section { border-top: 1px solid var(--line); }
+
+    .section-heading,
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .section-heading { margin-bottom: 14px; }
+
+    .section-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .section-kicker {
+      color: var(--muted-2);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .band-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .band-button {
+      position: relative;
+      display: grid;
+      grid-template-columns: 10px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 48px;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      transition: border-color .16s ease, background .16s ease, color .16s ease;
+    }
+
+    .band-button:hover { color: var(--text); background: rgba(255,255,255,.025); }
+    .band-button.active { color: var(--text); border-color: rgba(86, 229, 209, .28); background: var(--cyan-soft); }
+    .band-button[disabled] { opacity: .42; cursor: not-allowed; }
+
+    .band-indicator {
+      width: 8px;
+      height: 8px;
+      border: 1px solid var(--line-bright);
+      border-radius: 50%;
+    }
+
+    .band-button.active .band-indicator { border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 12px rgba(86, 229, 209, .75); }
+    .band-name { display: block; font-size: 13px; font-weight: 680; }
+    .band-range { display: block; margin-top: 2px; color: var(--muted-2); font-family: var(--mono); font-size: 10px; }
+    .band-count { min-width: 24px; color: var(--muted); font-family: var(--mono); font-size: 11px; text-align: right; }
+
+    .field-grid { display: grid; gap: 12px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      min-height: 37px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--text);
+      background: #0a1016;
+    }
+
+    .field input:hover,
+    .field select:hover { border-color: var(--line-bright); }
+
+    .range-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 9px;
+    }
+
+    input[type="range"] { min-height: 24px; padding: 0; accent-color: var(--cyan); }
+    .range-value { min-width: 54px; color: var(--cyan); font-family: var(--mono); font-size: 11px; text-align: right; }
+
+    .signal-path {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-cluster-spaced { margin-top: 10px; flex-wrap: wrap; }
+
+    .path-node {
+      min-width: 0;
+      padding: 9px 5px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: #0a1016;
+      font-family: var(--mono);
+      font-size: 10px;
+      text-align: center;
+    }
+
+    .path-node.active { color: var(--green); border-color: rgba(135, 237, 155, .23); background: rgba(135, 237, 155, .06); }
+    .path-arrow { color: var(--muted-2); font-size: 11px; }
+
+    .center-column { display: grid; gap: 16px; min-width: 0; }
+
+    .hero-panel { padding: 18px; }
+
+    .hero-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 18px;
+    }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .active-frequency {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: clamp(28px, 4.2vw, 54px);
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -.055em;
+    }
+
+    .active-frequency small { margin-left: 6px; color: var(--muted); font-size: .32em; letter-spacing: .02em; }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 11px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .hero-meta strong { color: var(--text); font-weight: 650; }
+
+    .scan-orbit {
+      position: relative;
+      display: grid;
+      width: 72px;
+      height: 72px;
+      place-items: center;
+      flex: 0 0 72px;
+      border: 1px solid rgba(86, 229, 209, .2);
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(86,229,209,.08), transparent 65%);
+    }
+
+    .scan-orbit::before,
+    .scan-orbit::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+    }
+
+    .scan-orbit::before { inset: 10px; border: 1px dashed rgba(86,229,209,.35); }
+    .scan-orbit::after { width: 8px; height: 8px; background: var(--cyan); box-shadow: 0 0 16px var(--cyan); transform: translateY(-25px); transform-origin: 4px 29px; animation: orbit 2.4s linear infinite; }
+    .scan-orbit.paused::after { animation-play-state: paused; opacity: .35; }
+    .scan-orbit span { color: var(--cyan); font-family: var(--mono); font-size: 10px; }
+
+    @keyframes orbit { to { transform: translateY(-25px) rotate(360deg); } }
+
+    .spectrum-wrap {
+      position: relative;
+      height: 205px;
+      margin-top: 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background:
+        linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px),
+        #090e14;
+      background-size: 100% 33.333%, 12.5% 100%;
+      overflow: hidden;
+      transition: height .24s ease, background .24s ease;
+    }
+
+    #spectrumCanvas { display: block; width: 100%; height: 100%; }
+    #spectrumCanvas[hidden],
+    .spectrum-overlay[hidden] { display: none; }
+
+    .spectrum-wrap.video-mode {
+      height: clamp(270px, 34vw, 430px);
+      background: #030507;
+    }
+
+    .decoded-video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #030507;
+      object-fit: contain;
+    }
+
+    .decoded-video[hidden],
+    .video-demo-badge[hidden] { display: none; }
+
+    .video-demo-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 25px;
+      padding: 0 8px;
+      border: 1px solid rgba(135, 237, 155, .24);
+      border-radius: 999px;
+      color: var(--green);
+      background: rgba(5, 12, 12, .76);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .view-switch {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .view-switch-label {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .view-toggle-group {
+      display: inline-flex;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #090e14;
+    }
+
+    .view-toggle {
+      min-height: 31px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 7px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .view-toggle:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,.035); }
+    .view-toggle[aria-pressed="true"] { color: #031311; background: var(--cyan); font-weight: 720; }
+    .view-toggle:disabled { opacity: .38; cursor: not-allowed; }
+
+    .spectrum-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .fft-edge-mask {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 25.6%;
+      background: repeating-linear-gradient(135deg, rgba(255,127,135,.035) 0 6px, rgba(255,127,135,.09) 6px 7px);
+      border-color: rgba(255,127,135,.2);
+    }
+
+    .fft-edge-mask.left { left: 0; border-right: 1px dashed rgba(255,127,135,.3); }
+    .fft-edge-mask.right { right: 0; border-left: 1px dashed rgba(255,127,135,.3); }
+
+    .dc-notch {
+      position: absolute;
+      top: 0;
+      bottom: 18px;
+      left: 50%;
+      width: 6px;
+      transform: translateX(-50%);
+      background: rgba(255,204,106,.08);
+      border-inline: 1px dashed rgba(255,204,106,.28);
+    }
+
+    .scan-cursor {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: var(--cursor-position, 52%);
+      width: 1px;
+      background: linear-gradient(transparent, var(--cyan), transparent);
+      box-shadow: 0 0 14px rgba(86, 229, 209, .7);
+      transition: left .55s linear;
+    }
+
+    .spectrum-labels {
+      position: absolute;
+      right: 10px;
+      bottom: 7px;
+      left: 10px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted-2);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+
+    .progress-track {
+      height: 4px;
+      margin-top: 14px;
+      border-radius: 99px;
+      background: #0a1016;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      width: 34%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--cyan), #84a8ff);
+      transition: width .5s linear;
+    }
+
+    .scanner-state-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .scanner-state-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .scanner-state-label { color: var(--muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+    .scanner-state-value { color: var(--cyan); font-family: var(--mono); font-size: 11px; }
+    .scanner-state-detail { color: var(--muted-2); font-family: var(--mono); font-size: 10px; text-align: right; }
+
+    .candidate-queue {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid rgba(184,148,255,.18);
+      border-radius: 10px;
+      background: rgba(184,148,255,.045);
+    }
+
+    .candidate-queue-copy { color: var(--muted); font-size: 11px; }
+    .candidate-queue-copy strong { color: var(--text); }
+    .candidate-vote { color: var(--purple); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
+      margin-top: 13px;
+    }
+
+    .stat {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255,255,255,.018);
+    }
+
+    .stat-label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+    .stat-value { display: block; margin-top: 5px; overflow: hidden; font-family: var(--mono); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-value.good { color: var(--green); }
+
+    .table-panel { min-width: 0; }
+    .panel-heading { padding: 15px 17px; border-bottom: 1px solid var(--line); }
+
+    .heading-copy h2 { margin: 0; font-size: 14px; }
+    .heading-copy p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+
+    .table-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .compact-select {
+      min-height: 32px;
+      padding: 0 28px 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: #0a1016;
+      font-size: 11px;
+    }
+
+    .table-scroll { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      min-width: 1180px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th {
+      padding: 10px 13px;
+      color: var(--muted-2);
+      font-size: 9px;
+      font-weight: 650;
+      letter-spacing: .08em;
+      text-align: left;
+      text-transform: uppercase;
+      background: rgba(255,255,255,.015);
+    }
+
+    td { padding: 12px 13px; border-top: 1px solid rgba(34,48,64,.78); vertical-align: middle; }
+    tbody tr { transition: background .14s ease; }
+    tbody tr[data-id] { cursor: pointer; }
+    tbody tr:hover { background: rgba(86,229,209,.035); }
+    tbody tr.selected { background: rgba(86,229,209,.07); }
+    tbody tr.dismissed { display: none; }
+
+    .freq-cell { font-family: var(--mono); font-size: 13px; font-weight: 650; }
+    .subtext { display: block; margin-top: 3px; color: var(--muted-2); font-family: var(--mono); font-size: 9px; }
+
+    .type-badge,
+    .confidence-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel-soft);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .type-badge.analog { color: var(--green); border-color: rgba(135,237,155,.19); background: rgba(135,237,155,.06); }
+    .type-badge.digital { color: var(--blue); border-color: rgba(122,168,255,.2); background: rgba(122,168,255,.06); }
+    .type-badge.unknown { color: var(--amber); border-color: rgba(255,204,106,.2); background: rgba(255,204,106,.06); }
+
+    .direction-cell { white-space: nowrap; }
+
+    .direction-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel-soft);
+      font-size: 10px;
+    }
+
+    .direction-arrow { font-family: var(--mono); font-size: 13px; line-height: 1; }
+    .direction-badge.approaching { color: var(--green); border-color: rgba(135,237,155,.2); background: rgba(135,237,155,.06); }
+    .direction-badge.receding { color: var(--blue); border-color: rgba(122,168,255,.2); background: rgba(122,168,255,.06); }
+    .direction-badge.static { color: var(--muted); }
+
+    .signal-meter { display: grid; grid-template-columns: 46px 66px; align-items: center; gap: 8px; }
+    .signal-value { color: var(--text); font-family: var(--mono); font-size: 11px; }
+    .meter-track { height: 5px; border-radius: 99px; background: #070b10; overflow: hidden; }
+    .meter-fill { height: 100%; border-radius: inherit; background: var(--cyan); }
+
+    .row-actions { display: flex; justify-content: flex-end; gap: 5px; }
+
+    .empty-state { display: none; padding: 34px 20px; color: var(--muted); text-align: center; }
+
+    .right-column { display: grid; gap: 16px; min-width: 0; }
+
+    .focus-signal { padding: 17px; }
+
+    .focus-frequency {
+      margin: 12px 0 2px;
+      font-family: var(--mono);
+      font-size: 27px;
+      letter-spacing: -.04em;
+    }
+
+    .focus-unit { color: var(--muted); font-size: 11px; }
+
+    .focus-type { color: var(--muted); font-size: 12px; }
+
+    .focus-chart {
+      position: relative;
+      height: 72px;
+      margin: 14px 0;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #090e14;
+      overflow: hidden;
+    }
+
+    #focusCanvas { display: block; width: 100%; height: 100%; }
+
+    .focus-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .focus-metric { padding: 8px; border-radius: 8px; background: rgba(255,255,255,.025); }
+    .focus-metric span { display: block; color: var(--muted-2); font-size: 9px; text-transform: uppercase; }
+    .focus-metric strong { display: block; margin-top: 4px; font-family: var(--mono); font-size: 12px; }
+    .focus-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 13px; }
+
+    .log-panel { min-height: 0; }
+    .log-details[open] { min-height: 330px; }
+
+    .log-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 68px;
+      padding: 13px 16px;
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .log-summary::-webkit-details-marker { display: none; }
+    .log-summary:hover { background: rgba(86, 229, 209, .035); }
+    .log-summary-copy { display: block; min-width: 0; }
+    .log-summary-title { display: block; font-size: 14px; font-weight: 700; }
+    .log-summary-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+
+    .log-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .log-toggle-label::before { content: "Показати"; }
+    .log-details[open] .log-toggle-label::before { content: "Сховати"; }
+    .log-toggle .icon { transition: transform .18s ease; }
+    .log-details[open] .log-toggle .icon { transform: rotate(180deg); }
+    .log-content { border-top: 1px solid var(--line); }
+    .log-toolbar { display: flex; justify-content: flex-end; padding: 8px 12px 4px; }
+
+    .log-list {
+      max-height: 420px;
+      margin: 0;
+      padding: 4px 0;
+      list-style: none;
+      overflow-y: auto;
+      scrollbar-color: var(--line-bright) transparent;
+    }
+
+    .log-item {
+      display: grid;
+      grid-template-columns: 50px 8px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 9px 14px;
+      border-bottom: 1px solid rgba(34,48,64,.48);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .log-item:last-child { border-bottom: 0; }
+    .log-time { color: var(--muted-2); }
+    .log-dot { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 8px currentColor; }
+    .log-dot.success { color: var(--green); background: var(--green); }
+    .log-dot.warning { color: var(--amber); background: var(--amber); }
+    .log-dot.system { color: var(--purple); background: var(--purple); }
+    .log-text { color: var(--muted); }
+    .log-text strong { color: var(--text); font-weight: 600; }
+
+    .footer-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 13px 2px 0;
+      color: var(--muted-2);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 20;
+      max-width: min(360px, calc(100vw - 44px));
+      padding: 12px 14px;
+      border: 1px solid rgba(86,229,209,.3);
+      border-radius: 10px;
+      color: var(--text);
+      background: #111a22;
+      box-shadow: var(--shadow);
+      font-size: 12px;
+      transform: translateY(20px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    .toast.visible { transform: translateY(0); opacity: 1; }
+
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 1fr; }
+      .right-column { grid-template-columns: minmax(250px, .65fr) minmax(0, 1.35fr); }
+      .log-list { max-height: 260px; }
+    }
+
+    @media (max-width: 820px) {
+      .app-shell { padding: 10px; }
+      .topbar { align-items: flex-start; flex-wrap: wrap; }
+      .topbar-status { order: 3; width: 100%; justify-content: space-between; }
+      .layout { grid-template-columns: 1fr; }
+      .right-column { grid-template-columns: 1fr; }
+      .hero-top { grid-template-columns: 1fr 62px; }
+      .scan-orbit { width: 62px; height: 62px; }
+      .scan-orbit::after { transform: translateY(-21px); transform-origin: 4px 25px; }
+      @keyframes orbit { to { transform: translateY(-21px) rotate(360deg); } }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .footer-line { flex-direction: column; gap: 4px; }
+    }
+
+    @media (max-width: 560px) {
+      .brand-subtitle, .device-pill { display: none; }
+      .topbar-actions .btn span { display: none; }
+      .topbar-actions .btn { width: 40px; padding: 0; }
+      .panel-heading { align-items: flex-start; flex-direction: column; }
+      .table-tools { width: 100%; justify-content: space-between; }
+      .compact-select { flex: 1; }
+      .spectrum-wrap { height: 170px; }
+      .spectrum-wrap.video-mode { height: min(68vw, 340px); }
+      .view-switch { align-items: flex-start; flex-direction: column; }
+      .view-toggle-group { width: 100%; }
+      .view-toggle { flex: 1; }
+      .focus-actions { grid-template-columns: 1fr; }
+      .field-row { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="brand" id="mainMenuButton" type="button" aria-label="Відкрити головне меню" aria-expanded="false" aria-controls="mainMenuDrawer">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span><span class="brand-title">SDR Video Scanner</span><span class="brand-subtitle">MAIA WATERFALL · MAIN MENU</span></span>
+      </button>
+
+      <div class="topbar-status" role="status" aria-label="Стан системи">
+        <span class="device-pill">waterfall WS · <strong id="wsLatency">14.2 ms</strong></span>
+        <span class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">FAST_SCAN</span></span>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="btn btn-ghost btn-icon" id="soundButton" type="button" aria-label="Вимкнути звуки" aria-pressed="true">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 9.5a4 4 0 0 1 0 5"/><path d="M18 7a7 7 0 0 1 0 10"/></svg>
+        </button>
+        <button class="btn btn-primary" id="scanToggle" type="button">
+          <svg class="icon" id="scanToggleIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+          <span id="scanToggleLabel">Пауза</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="menu-backdrop" id="menuBackdrop" aria-hidden="true"></div>
+    <aside class="main-menu-drawer" id="mainMenuDrawer" aria-label="Головне меню" inert>
+      <header class="main-menu-header">
+        <div><h2 class="main-menu-title">Main menu</h2><p class="main-menu-subtitle">Керування сканером</p></div>
+        <button class="btn btn-ghost btn-icon" id="mainMenuClose" type="button" aria-label="Закрити головне меню">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div class="main-menu-body">
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Scan ranges</h2><span class="section-kicker">UNIFORM SWEEP</span></div>
+          <div class="band-list" id="bandList">
+            <button class="band-button" type="button" data-band="1.2" data-start="1200" data-end="1400"><span class="band-indicator"></span><span><span class="band-name">1.2—1.4 GHz</span><span class="band-range">RF1 · priority 3 · enabled</span></span><span class="band-count" data-count="1.2">2</span></button>
+            <button class="band-button" type="button" data-band="2.4" data-start="2300" data-end="2500"><span class="band-indicator"></span><span><span class="band-name">2.3—2.5 GHz</span><span class="band-range">RF2 · priority 2 · enabled</span></span><span class="band-count" data-count="2.4">1</span></button>
+            <button class="band-button" type="button" data-band="3.3" data-start="3200" data-end="3500"><span class="band-indicator"></span><span><span class="band-name">3.2—3.5 GHz</span><span class="band-range">RF3 · priority 1 · enabled</span></span><span class="band-count" data-count="3.3">1</span></button>
+            <button class="band-button active" type="button" data-band="5.x" data-start="4900" data-end="6000" aria-current="true"><span class="band-indicator"></span><span><span class="band-name">4.9—6.0 GHz</span><span class="band-range">RF4 · priority 0 · enabled</span></span><span class="band-count" data-count="5.x">3</span></button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Maia connection</h2><span class="section-kicker" id="wsMenuState">CONNECTED</span></div>
+          <div class="field-grid">
+            <div class="field"><label for="maiaEndpoint">Waterfall WebSocket</label><input id="maiaEndpoint" type="text" value="ws://192.168.2.1/waterfall" spellcheck="false"></div>
+            <div class="field-row">
+              <div class="field"><label for="sampleRate">Sample rate</label><select id="sampleRate"><option selected>30.72 MSPS</option><option>20 MSPS</option><option>10 MSPS</option></select></div>
+              <div class="field"><label for="rfBandwidth">RF bandwidth</label><select id="rfBandwidth"><option selected>18 MHz</option><option>15 MHz</option><option>10 MHz</option></select></div>
+            </div>
+            <div class="status-cluster"><span class="mini-pill">waterfall only</span><span class="mini-pill">no raw IQ while scanning</span></div>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Fast sweep</h2><button class="btn btn-ghost btn-small" type="button" id="resetSettings">Скинути</button></div>
+          <div class="field-grid">
+            <div class="field-row">
+              <div class="field"><label for="frequencyStep">Frequency step</label><select id="frequencyStep"><option selected>15 MHz</option><option>12 MHz</option><option>10 MHz</option></select></div>
+              <div class="field"><label for="usableSpan">Usable FFT span</label><select id="usableSpan"><option selected>15 MHz</option><option>14 MHz</option><option>12 MHz</option></select></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="loSettling">LO settling, ms</label><input id="loSettling" type="number" min="1" max="50" value="5"></div>
+              <div class="field"><label for="discardFrames">Discard FFT frames</label><input id="discardFrames" type="number" min="0" max="10" value="2"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="fastMeasurement">Fast measurement, ms</label><input id="fastMeasurement" type="number" min="5" max="100" value="10"></div>
+              <div class="field"><label for="dwellTime">Target dwell, ms</label><input id="dwellTime" type="number" min="15" max="100" value="18"></div>
+            </div>
+            <div class="field"><label for="retuneTimeout">Retune timeout, ms</label><input id="retuneTimeout" type="number" min="50" max="1000" step="10" value="250"></div>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Candidate analysis</h2><span class="section-kicker">REVISIT + CLASSIFY</span></div>
+          <div class="field-grid">
+            <div class="field-row">
+              <div class="field"><label for="candidateMeasurement">Measurement, ms</label><input id="candidateMeasurement" type="number" min="25" max="500" value="75"></div>
+              <div class="field"><label for="revisitCount">Revisits</label><input id="revisitCount" type="number" min="1" max="10" value="3"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="positiveRevisits">Required positive</label><input id="positiveRevisits" type="number" min="1" max="10" value="2"></div>
+              <div class="field"><label for="fpvTolerance">FPV tolerance, MHz</label><input id="fpvTolerance" type="number" min="0.1" max="10" step="0.1" value="2.0"></div>
+            </div>
+            <div class="field"><label for="threshold">Peak over noise</label><input id="threshold" type="number" min="3" max="30" step="1" value="9"></div>
+            <button class="btn btn-primary" id="applyScanConfig" type="button">Застосувати й перезапустити scanner</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">RF тракт</h2><span class="section-kicker">READY</span></div>
+          <div class="signal-path" role="img" aria-label="Антена, фільтр, мультиплексор, атенюатор, SDR">
+            <span class="path-node active">BPF</span><span class="path-arrow">›</span><span class="path-node active">MUX 4</span><span class="path-arrow">›</span><span class="path-node">LNA BYP</span>
+          </div>
+          <div class="status-cluster status-cluster-spaced">
+            <span class="mini-pill">settle 3 ms</span><span class="mini-pill">dummy controller</span>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <main class="layout">
+
+      <section class="center-column">
+        <article class="panel hero-panel" aria-labelledby="activeBandLabel">
+          <div class="hero-top">
+            <div>
+              <p class="eyebrow" id="activeBandLabel">Maia waterfall · 4.9—6.0 GHz</p>
+              <p class="active-frequency"><span id="currentFrequency">5 455.0</span><small>MHz LO</small></p>
+              <div class="hero-meta">
+                <span>window <strong id="channelIndex">38 / 74</strong></span>
+                <span>step <strong>15 MHz</strong></span>
+                <span>FFT seq <strong id="fftSequence">#48 321</strong></span>
+              </div>
+            </div>
+            <div class="scan-orbit" id="scanOrbit" aria-hidden="true"><span>FFT</span></div>
+          </div>
+
+          <div class="spectrum-wrap" id="visualStage" role="group" aria-label="Демонстраційний спектр активного діапазону">
+            <canvas id="spectrumCanvas"></canvas>
+            <video class="decoded-video" id="decodedVideo" preload="metadata" loop muted playsinline hidden>
+              <source src="sdr-decoded-analog-fpv.mp4" type="video/mp4">
+            </video>
+            <span class="video-demo-badge" id="videoDemoBadge" hidden><span class="dot"></span>Demo decode · 5.925 GHz</span>
+            <div class="spectrum-overlay" id="spectrumOverlay">
+              <span class="fft-edge-mask left"></span><span class="fft-edge-mask right"></span><span class="dc-notch"></span>
+              <div class="scan-cursor" id="scanCursor"></div>
+              <div class="spectrum-labels"><span id="spectrumStart">5.4396 GHz</span><span id="spectrumMid">5.4550 GHz</span><span id="spectrumEnd">5.4704 GHz</span></div>
+            </div>
+          </div>
+          <div class="view-switch">
+            <span class="view-switch-label">Вигляд</span>
+            <div class="view-toggle-group" role="group" aria-label="Режим центрального вікна">
+              <button class="view-toggle" id="spectrumViewButton" type="button" aria-pressed="true">Спектр</button>
+              <button class="view-toggle" id="videoViewButton" type="button" aria-pressed="false">Декодоване відео</button>
+            </div>
+          </div>
+          <div class="scanner-state-row"><div class="scanner-state-main"><span class="scanner-state-label">Scanner state</span><span class="scanner-state-value" id="scannerPhase">COLLECTING</span></div><span class="scanner-state-detail" id="scannerPhaseDetail">6 FFT frames · discard 2 complete</span></div>
+          <div class="progress-track" id="progressTrack" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+
+          <div class="stats-grid" role="group" aria-label="Поточні показники">
+            <div class="stat"><span class="stat-label">Noise floor</span><span class="stat-value" id="noiseFloor">−91.4 dBFS</span></div>
+            <div class="stat"><span class="stat-label">FFT frames</span><span class="stat-value" id="fftFrames">6 valid</span></div>
+            <div class="stat"><span class="stat-label">Retune latency</span><span class="stat-value" id="retuneLatency">8.4 ms</span></div>
+            <div class="stat"><span class="stat-label">Candidates</span><span class="stat-value good" id="foundCount">7 confirmed</span></div>
+          </div>
+          <div class="candidate-queue"><span class="candidate-queue-copy"><strong id="candidateQueueTitle">Revisit queue: 3</strong> · next 5 885.4 MHz · 75 ms</span><span class="candidate-vote" id="candidateVote">vote 1 / 3</span></div>
+        </article>
+
+        <article class="panel table-panel">
+          <div class="panel-heading">
+            <div class="heading-copy"><h2>Знайдені сигнали</h2><p>Analog FPV: натисніть рядок для відео, повторно — для спектра</p></div>
+            <div class="table-tools">
+              <select class="compact-select" id="signalFilter" aria-label="Фільтр сигналів">
+                <option value="all">Усі діапазони</option>
+                <option value="active">Лише активний</option>
+                <option value="analog">Analog FPV</option>
+                <option value="digital">Digital / OFDM</option>
+              </select>
+              <button class="btn btn-small" id="exportButton" type="button">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 15v5h14v-5"/></svg>
+                CSV
+              </button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Частота</th><th>FPV match</th><th>Тип</th><th>Peak / NF</th><th>SNR</th><th>BW</th><th>Напрямок</th><th>Confidence</th><th>First / last</th><th>Count</th><th aria-label="Дії"></th></tr></thead>
+              <tbody id="signalsBody"></tbody>
+            </table>
+            <div class="empty-state" id="emptyState">Немає сигналів за вибраним фільтром.</div>
+          </div>
+        </article>
+      </section>
+
+      <aside class="right-column" aria-label="Сигнал та журнал подій">
+        <article class="panel focus-signal" aria-live="polite">
+          <div class="section-heading"><h2 class="section-title">Вибраний сигнал</h2><span class="type-badge analog" id="focusBadge">ANALOG FPV</span></div>
+          <p class="focus-frequency"><span id="focusFrequency">5 805.0</span> <small class="focus-unit">MHz</small></p>
+          <div class="focus-type" id="focusDescription">R5 · nominal 5 806.0 · measured 5 805.4 MHz</div>
+          <div class="focus-chart"><canvas id="focusCanvas"></canvas></div>
+          <div class="focus-metrics">
+            <div class="focus-metric"><span>Peak</span><strong id="focusRssi">−42.7</strong></div>
+            <div class="focus-metric"><span>Noise</span><strong id="focusNoise">−91.4</strong></div>
+            <div class="focus-metric"><span>SNR</span><strong id="focusSnr">18.6</strong></div>
+            <div class="focus-metric"><span>BW</span><strong id="focusBandwidth">6.3M</strong></div>
+          </div>
+          <div class="focus-actions">
+            <button class="btn btn-primary" id="lockButton" type="button">Зафіксувати</button>
+            <button class="btn" id="skipButton" type="button">Пропустити</button>
+          </div>
+        </article>
+
+        <details class="panel log-panel log-details" id="logDetails">
+          <summary class="log-summary">
+            <span class="log-summary-copy"><span class="log-summary-title">Журнал подій</span><span class="log-summary-meta" id="logSummary">Сесія 00:08:42 · 12 подій</span></span>
+            <span class="log-toggle"><span class="log-toggle-label"></span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <div class="log-content">
+            <div class="log-toolbar"><button class="btn btn-ghost btn-small" id="clearLog" type="button">Очистити</button></div>
+            <ol class="log-list" id="eventLog" aria-live="polite"></ol>
+          </div>
+        </details>
+      </aside>
+    </main>
+
+    <footer class="footer-line"><span>DEMO DATA · FRONTEND PROTOTYPE</span><span>Pluto Nano / Tezuka · RP2040 MUX controller</span></footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const bands = {
+      "1.2": { label: "1.2—1.4 GHz", start: 1200, end: 1400, channels: 14, mux: 1, rfPath: "RF1" },
+      "2.4": { label: "2.3—2.5 GHz", start: 2300, end: 2500, channels: 14, mux: 2, rfPath: "RF2" },
+      "3.3": { label: "3.2—3.5 GHz", start: 3200, end: 3500, channels: 20, mux: 3, rfPath: "RF3" },
+      "5.x": { label: "4.9—6.0 GHz", start: 4900, end: 6000, channels: 74, mux: 4, rfPath: "RF4" }
+    };
+
+    const demoMode = new URLSearchParams(window.location.search).get("demo") === "1";
+
+    let signals = demoMode ? [
+      { id: 1, freq: 5805.4, nominal: 5806.0, channel: "5.8 / R5", offset: -0.6, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "PAL · stable · 3/3 revisits", rssi: -42.7, noiseFloor: -91.4, snr: 18.6, bandwidth: 6.3, direction: "approaching", trend: 2.4, confidence: 96, status: "CONFIRMED", firstSeen: "10:07:18", lastSeen: "10:14:32", seen: 4 },
+      { id: 2, freq: 5881.1, nominal: 5880.0, channel: "5.8 / R7", offset: 1.1, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "NTSC/PAL525 · 2/3 revisits", rssi: -57.2, noiseFloor: -90.8, snr: 12.1, bandwidth: 6.8, direction: "static", trend: 0.2, confidence: 89, status: "CONFIRMED", firstSeen: "10:08:04", lastSeen: "10:13:58", seen: 3 },
+      { id: 3, freq: 5665.8, nominal: null, channel: "UNALIGNED", offset: null, band: "5.x", range: "4.9—6.0", type: "digital", label: "Wideband unknown", detail: "OFDM-like · unaligned candidate", rssi: -66.8, noiseFloor: -89.9, snr: 9.4, bandwidth: 19.6, direction: "receding", trend: -1.7, confidence: 78, status: "UNALIGNED", firstSeen: "10:09:33", lastSeen: "10:12:41", seen: 2 },
+      { id: 4, freq: 3319.2, nominal: 3320.0, channel: "3.3 / E2", offset: -0.8, band: "3.3", range: "3.2—3.5", type: "unknown", label: "Interference", detail: "Wideband transient · revisit pending", rssi: -71.5, noiseFloor: -91.2, snr: 7.2, bandwidth: 4.1, direction: "approaching", trend: 1.1, confidence: 61, status: "REVISIT 1/3", firstSeen: "10:11:19", lastSeen: "10:11:19", seen: 1 },
+      { id: 5, freq: 2447.3, nominal: null, channel: "UNALIGNED", offset: null, band: "2.4", range: "2.3—2.5", type: "digital", label: "Narrowband", detail: "Packet signal · bandwidth mismatch", rssi: -63.1, noiseFloor: -92.0, snr: 10.8, bandwidth: 1.2, direction: "static", trend: -0.1, confidence: 82, status: "CONFIRMED", firstSeen: "10:05:12", lastSeen: "10:09:44", seen: 5 },
+      { id: 6, freq: 1281.4, nominal: 1280.0, channel: "1.2 / CH8", offset: 1.4, band: "1.2", range: "1.2—1.4", type: "analog", label: "Analog FPV", detail: "PAL · low stability · 2/3 revisits", rssi: -68.9, noiseFloor: -92.6, snr: 8.7, bandwidth: 5.9, direction: "receding", trend: -2.0, confidence: 74, status: "CONFIRMED", firstSeen: "10:06:45", lastSeen: "10:08:16", seen: 2 },
+      { id: 7, freq: 1201.8, nominal: 1200.0, channel: "1.2 / CH1", offset: 1.8, band: "1.2", range: "1.2—1.4", type: "unknown", label: "Unknown", detail: "Narrow FM-like candidate", rssi: -75.4, noiseFloor: -92.1, snr: 5.9, bandwidth: 0.8, direction: "static", trend: 0.1, confidence: 53, status: "REVISIT 2/3", firstSeen: "10:07:50", lastSeen: "10:07:50", seen: 1 }
+    ] : [];
+
+    const initialLogs = demoMode ? [
+      ["10:14:32", "success", "FPV match <strong>R5 / 5806.0 MHz</strong> · measured 5805.4 · Δ −0.6 MHz"],
+      ["10:14:31", "system", "Candidate revisit <strong>3/3</strong> · 75 ms · confirmed"],
+      ["10:14:18", "system", "RF4 / MUX 4 · BPF <strong>4.9—6.0 GHz</strong> ready"],
+      ["10:13:58", "success", "Candidate 5881.1 MHz merged · vote <strong>2/3 positive</strong>"],
+      ["10:13:41", "warning", "DC bin та крайні FFT-ділянки виключено з аналізу"],
+      ["10:13:02", "system", "LO confirmed 5665.0 MHz · retune <strong>8.1 ms</strong>"],
+      ["10:12:41", "success", "Новий wideband candidate на <strong>5665.8 MHz</strong>"],
+      ["10:12:06", "system", "Waterfall frames: 2 stale discarded · 6 valid collected"],
+      ["10:11:19", "warning", "Retune retry 3320.0 MHz · timeout guard 250 ms"],
+      ["10:10:55", "system", "RF3 / MUX 3 · BPF <strong>3.2—3.5 GHz</strong> ready"],
+      ["10:09:44", "success", "Noise-relative peak 2447.3 MHz · SNR <strong>10.8 dB</strong>"],
+      ["10:06:02", "system", "WebSocket connected · <strong>30.72 MSPS / RF BW 18 MHz</strong> · no raw IQ"]
+    ] : [];
+
+    const bandOrder = ["1.2", "2.4", "3.3", "5.x"];
+    const scanPhases = [
+      { name: "RETUNING", detail: "LO request · stale-frame guard armed" },
+      { name: "SETTLING", detail: "LO 5 ms · RF path settled" },
+      { name: "COLLECTING", detail: "6 FFT frames · discard 2 complete" },
+      { name: "ANALYZING", detail: "median noise · edges and DC excluded" }
+    ];
+
+    const state = {
+      scanning: demoMode,
+      activeBand: "5.x",
+      selectedSignal: 1,
+      locked: false,
+      muted: false,
+      channel: 1,
+      progress: 0,
+      filter: "all",
+      viewMode: "spectrum",
+      scannerPhase: "COLLECTING",
+      scannerPhaseDetail: "6 FFT frames · discard 2 complete",
+      phaseIndex: 2,
+      bandOrderIndex: 3,
+      currentLO: 4907.5,
+      fftSequence: 48321,
+      fftFrames: 6,
+      completedSteps: 0,
+      lastRevisitStep: -1,
+      logCount: initialLogs.length,
+      sessionStarted: Date.now() - 522000
+    };
+
+    const el = id => document.getElementById(id);
+    const formatFrequency = value => value.toLocaleString("uk-UA", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).replace(/,/g, ",");
+    const nowTime = () => new Date().toLocaleTimeString("uk-UA", { hour12: false });
+
+    function toast(message) {
+      el("toast").textContent = message;
+      el("toast").classList.add("visible");
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => el("toast").classList.remove("visible"), 2200);
+    }
+
+    function openMainMenu() {
+      document.body.classList.add("menu-open");
+      el("mainMenuDrawer").classList.add("open");
+      el("menuBackdrop").classList.add("open");
+      el("mainMenuDrawer").inert = false;
+      el("menuBackdrop").setAttribute("aria-hidden", "false");
+      el("mainMenuButton").setAttribute("aria-expanded", "true");
+      el("mainMenuClose").focus();
+    }
+
+    function closeMainMenu(restoreFocus = true) {
+      document.body.classList.remove("menu-open");
+      el("mainMenuDrawer").classList.remove("open");
+      el("menuBackdrop").classList.remove("open");
+      el("mainMenuDrawer").inert = true;
+      el("menuBackdrop").setAttribute("aria-hidden", "true");
+      el("mainMenuButton").setAttribute("aria-expanded", "false");
+      if (restoreFocus) el("mainMenuButton").focus();
+    }
+
+    function signalClass(type) {
+      return type === "analog" ? "analog" : type === "digital" ? "digital" : "unknown";
+    }
+
+    function directionMeta(direction) {
+      if (direction === "approaching") return { label: "Наближення", arrow: "↗" };
+      if (direction === "receding") return { label: "Віддалення", arrow: "↘" };
+      return { label: "Статичний", arrow: "—" };
+    }
+
+    function confidenceLabel(value) {
+      return value >= 90 ? "Висока" : value >= 70 ? "Середня" : "Низька";
+    }
+
+    function meterWidth(rssi) {
+      return Math.max(8, Math.min(100, (rssi + 95) * 1.82));
+    }
+
+    function renderSignals() {
+      const visible = signals.filter(signal => {
+        if (signal.dismissed) return false;
+        if (state.filter === "active") return signal.band === state.activeBand;
+        if (state.filter === "analog" || state.filter === "digital") return signal.type === state.filter;
+        return true;
+      });
+
+      el("signalsBody").innerHTML = visible.map(signal => {
+        const direction = directionMeta(signal.direction);
+        const trend = `${signal.trend > 0 ? "+" : ""}${signal.trend.toFixed(1)} dB/s`;
+        const primaryFrequency = signal.nominal ?? signal.freq;
+        const frequencyMeta = signal.nominal ? `measured ${formatFrequency(signal.freq)} MHz` : `raw · ${signal.range} GHz`;
+        const offset = signal.offset === null ? "outside ±2 MHz" : `Δ ${signal.offset > 0 ? "+" : ""}${signal.offset.toFixed(1)} MHz`;
+        return `
+        <tr data-id="${signal.id}" class="${signal.id === state.selectedSignal ? "selected" : ""}" tabindex="0">
+          <td><span class="freq-cell">${formatFrequency(primaryFrequency)} MHz</span><span class="subtext">${frequencyMeta}</span></td>
+          <td><span class="signal-value">${signal.channel}</span><span class="subtext">${offset}</span></td>
+          <td><span class="type-badge ${signalClass(signal.type)}">${signal.label}</span></td>
+          <td><div class="signal-meter"><span class="signal-value">${signal.rssi.toFixed(1)}</span><span class="meter-track"><span class="meter-fill" style="display:block;width:${meterWidth(signal.rssi)}%"></span></span></div><span class="subtext">NF ${signal.noiseFloor.toFixed(1)} dBFS</span></td>
+          <td><span class="signal-value">${signal.snr.toFixed(1)} dB</span></td>
+          <td><span class="signal-value">${signal.bandwidth.toFixed(1)} MHz</span></td>
+          <td class="direction-cell"><span class="direction-badge ${signal.direction}"><span class="direction-arrow">${direction.arrow}</span>${direction.label}</span><span class="subtext">${trend}</span></td>
+          <td><span class="confidence-badge">${signal.confidence}%</span><span class="subtext">${signal.status}</span></td>
+          <td><span class="signal-value">${signal.firstSeen}</span><span class="subtext">last ${signal.lastSeen}</span></td>
+          <td><span class="signal-value">${signal.seen}×</span></td>
+          <td><div class="row-actions"><button class="btn btn-ghost btn-small tune-action" type="button" data-id="${signal.id}" aria-label="Налаштуватися на ${signal.freq} MHz">Tune</button><button class="btn btn-ghost btn-small dismiss-action" type="button" data-id="${signal.id}" aria-label="Приховати ${signal.freq} MHz">×</button></div></td>
+        </tr>`;
+      }).join("");
+
+      el("emptyState").style.display = visible.length ? "none" : "block";
+      updateCounts();
+    }
+
+    function bindSignalTable() {
+      el("signalsBody").addEventListener("click", event => {
+        const row = event.target.closest("tr[data-id]");
+        if (!row) return;
+        const id = Number(row.dataset.id);
+
+        if (event.target.closest(".dismiss-action")) {
+          dismissSignal(id);
+          return;
+        }
+
+        if (event.target.closest(".tune-action")) {
+          if (!demoMode) {
+            selectSignal(id);
+            const signal = signals.find(item => item.id === id);
+            if (signal?.type === "analog") callAndroid("lockSignal", id); else callAndroid("selectSignal", id);
+            return;
+          }
+          tuneSignal(id);
+          return;
+        }
+
+        handleSignalRowActivation(id);
+      });
+
+      el("signalsBody").addEventListener("keydown", event => {
+        if (event.target.closest("button")) return;
+        const row = event.target.closest("tr[data-id]");
+        if (!row || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        handleSignalRowActivation(Number(row.dataset.id));
+      });
+    }
+
+    function updateCounts() {
+      Object.keys(bands).forEach(band => {
+        const count = signals.filter(signal => signal.band === band && !signal.dismissed).length;
+        const node = document.querySelector(`[data-count="${band}"]`);
+        if (node) node.textContent = count;
+      });
+      const count = signals.filter(signal => !signal.dismissed).length;
+      el("foundCount").textContent = `${count} confirmed`;
+    }
+
+    function handleSignalRowActivation(id) {
+      const signal = signals.find(item => item.id === id);
+      if (!signal) return;
+      const returnToSpectrum = state.selectedSignal === id && state.viewMode === "video";
+      selectSignal(id);
+      if (!demoMode) {
+        callAndroid("selectSignal", id);
+        if (signal.type === "analog") {
+          if (returnToSpectrum) callAndroid("releaseSignal"); else callAndroid("lockSignal", id);
+        } else {
+          callAndroid("showSpectrum");
+        }
+        return;
+      }
+      if (signal.type === "analog") setViewMode(returnToSpectrum ? "spectrum" : "video", true);
+      else setViewMode("spectrum");
+    }
+
+    function setViewMode(mode, announce = false) {
+      const signal = signals.find(item => item.id === state.selectedSignal);
+      if (mode === "video" && (!signal || signal.type !== "analog")) {
+        toast("Декодоване відео доступне лише для Analog FPV");
+        return;
+      }
+
+      const wasVideo = state.viewMode === "video";
+      const showVideo = mode === "video";
+      state.viewMode = showVideo ? "video" : "spectrum";
+
+      if (showVideo) {
+        if (state.activeBand !== signal.band) setActiveBand(signal.band, false);
+        const band = bands[signal.band];
+        state.channel = Math.max(1, Math.min(band.channels, Math.round((signal.freq - band.start - 7.5) / 15) + 1));
+        state.progress = Math.min(100, (state.channel / band.channels) * 100);
+        state.scanning = false;
+        state.locked = true;
+        state.currentLO = signal.freq;
+        el("currentFrequency").textContent = formatFrequency(signal.freq);
+        el("channelIndex").textContent = `${state.channel} / ${band.channels}`;
+        el("progressBar").style.width = `${state.progress}%`;
+        setScannerPhase("VIDEO_DECODE", `LO fixed ${formatFrequency(signal.freq)} MHz · scanner suspended`);
+      } else if (wasVideo) {
+        state.locked = false;
+        state.scanning = true;
+        state.phaseIndex = -1;
+        setScannerPhase("CONFIGURING", "decoder released SDR · restoring waterfall scan");
+      }
+
+      updateScannerUi();
+      el("visualStage").classList.toggle("video-mode", showVideo);
+      el("visualStage").setAttribute("aria-label", showVideo ? "Декодоване Analog FPV відео" : "Демонстраційний спектр активного діапазону");
+      el("spectrumCanvas").hidden = showVideo;
+      el("spectrumOverlay").hidden = showVideo;
+      el("decodedVideo").hidden = !showVideo;
+      el("videoDemoBadge").hidden = !showVideo;
+      el("progressTrack").hidden = showVideo;
+      el("spectrumViewButton").setAttribute("aria-pressed", String(!showVideo));
+      el("videoViewButton").setAttribute("aria-pressed", String(showVideo));
+
+      if (showVideo) {
+        el("decodedVideo").play().catch(() => toast("Натисніть «Декодоване відео» ще раз для відтворення"));
+        if (announce) appendLog("success", `Частоту <strong>${formatFrequency(signal.freq)} MHz</strong> зафіксовано · відкрито декодоване відео`);
+      } else {
+        el("decodedVideo").pause();
+        updateSpectrumLabels(state.currentLO);
+        drawSpectrum(state.currentLO);
+        if (announce) appendLog("system", "Фіксацію знято · сканування частот відновлено");
+      }
+    }
+
+    function selectSignal(id) {
+      const signal = signals.find(item => item.id === id);
+      if (!signal) return;
+      state.selectedSignal = id;
+      el("focusBadge").textContent = signal.label.toUpperCase();
+      el("focusBadge").className = `type-badge ${signalClass(signal.type)}`;
+      el("focusFrequency").textContent = formatFrequency(signal.nominal ?? signal.freq);
+      const measured = `measured ${formatFrequency(signal.freq)} MHz`;
+      const match = signal.nominal ? `${signal.channel} · ${signal.offset > 0 ? "+" : ""}${signal.offset.toFixed(1)} MHz` : "UNALIGNED";
+      el("focusDescription").textContent = `${match} · ${measured} · ${signal.detail}`;
+      el("focusRssi").textContent = signal.rssi.toFixed(1);
+      el("focusNoise").textContent = signal.noiseFloor.toFixed(1);
+      el("focusSnr").textContent = signal.snr.toFixed(1);
+      el("focusBandwidth").textContent = `${signal.bandwidth.toFixed(1)}M`;
+      el("lockButton").textContent = state.locked ? "Відпустити" : "Зафіксувати";
+      el("videoViewButton").disabled = signal.type !== "analog";
+      if (signal.type !== "analog" && state.viewMode === "video") setViewMode("spectrum");
+      renderSignals();
+      drawFocus(signal);
+    }
+
+    function tuneSignal(id) {
+      const signal = signals.find(item => item.id === id);
+      if (!signal) return;
+      selectSignal(id);
+      setActiveBand(signal.band, false);
+      state.channel = Math.max(1, Math.min(bands[signal.band].channels, Math.round((signal.freq - bands[signal.band].start - 7.5) / 15) + 1));
+      state.currentLO = signal.freq;
+      el("currentFrequency").textContent = formatFrequency(signal.freq);
+      el("channelIndex").textContent = `${state.channel} / ${bands[signal.band].channels}`;
+      updateSpectrumLabels(state.currentLO);
+      appendLog("success", `Ручне налаштування на <strong>${formatFrequency(signal.freq)} MHz</strong>`);
+      toast(`Приймач налаштовано на ${formatFrequency(signal.freq)} MHz`);
+      setViewMode(signal.type === "analog" ? "video" : "spectrum", signal.type === "analog");
+    }
+
+    function dismissSignal(id) {
+      const signal = signals.find(item => item.id === id);
+      if (!signal) return;
+      signal.dismissed = true;
+      if (state.selectedSignal === id) {
+        const next = signals.find(item => !item.dismissed);
+        if (next) state.selectedSignal = next.id;
+      }
+      appendLog("warning", `Сигнал <strong>${formatFrequency(signal.freq)} MHz</strong> приховано зі списку`);
+      renderSignals();
+      const selected = signals.find(item => item.id === state.selectedSignal);
+      if (selected) selectSignal(selected.id);
+    }
+
+    function renderInitialLogs() {
+      el("eventLog").innerHTML = initialLogs.map(item => logMarkup(...item)).join("");
+      updateLogSummary();
+    }
+
+    function logMarkup(time, type, message) {
+      return `<li class="log-item"><time class="log-time">${time}</time><span class="log-dot ${type}"></span><span class="log-text">${message}</span></li>`;
+    }
+
+    function appendLog(type, message) {
+      state.logCount += 1;
+      el("eventLog").insertAdjacentHTML("afterbegin", logMarkup(nowTime(), type, message));
+      while (el("eventLog").children.length > 40) el("eventLog").lastElementChild.remove();
+      updateLogSummary();
+    }
+
+    function updateLogSummary() {
+      const seconds = Math.max(0, Math.floor((Date.now() - state.sessionStarted) / 1000));
+      const hh = String(Math.floor(seconds / 3600)).padStart(2, "0");
+      const mm = String(Math.floor(seconds % 3600 / 60)).padStart(2, "0");
+      const ss = String(seconds % 60).padStart(2, "0");
+      el("logSummary").textContent = `Сесія ${hh}:${mm}:${ss} · ${state.logCount} подій`;
+    }
+
+    function centerForChannel(band, channel) {
+      return Math.min(band.end - 7.5, band.start + 7.5 + (channel - 1) * 15);
+    }
+
+    function updateSpectrumLabels(center) {
+      const halfSampleSpan = 15.36;
+      el("spectrumStart").textContent = `${((center - halfSampleSpan) / 1000).toFixed(4)} GHz`;
+      el("spectrumMid").textContent = `${(center / 1000).toFixed(4)} GHz`;
+      el("spectrumEnd").textContent = `${((center + halfSampleSpan) / 1000).toFixed(4)} GHz`;
+    }
+
+    function setScannerPhase(name, detail) {
+      state.scannerPhase = name;
+      state.scannerPhaseDetail = detail;
+      updateScannerUi();
+    }
+
+    function setActiveBand(key, log = true) {
+      const band = bands[key];
+      if (!band) return;
+      state.activeBand = key;
+      state.bandOrderIndex = bandOrder.indexOf(key);
+      state.channel = 1;
+      state.progress = 0;
+      state.currentLO = centerForChannel(band, state.channel);
+      document.querySelectorAll(".band-button[data-band]").forEach(button => {
+        const active = button.dataset.band === key;
+        button.classList.toggle("active", active);
+        if (active) button.setAttribute("aria-current", "true"); else button.removeAttribute("aria-current");
+      });
+      el("activeBandLabel").textContent = `Maia waterfall · ${band.label}`;
+      el("currentFrequency").textContent = formatFrequency(state.currentLO);
+      el("channelIndex").textContent = `1 / ${band.channels}`;
+      updateSpectrumLabels(state.currentLO);
+      el("progressBar").style.width = "0%";
+      el("scanCursor").style.setProperty("--cursor-position", "0%");
+      if (log) appendLog("system", `${band.rfPath} / MUX ${band.mux} · BPF <strong>${band.label}</strong> · settle 3 ms`);
+      drawSpectrum(state.currentLO);
+      if (state.filter === "active") renderSignals();
+    }
+
+    function updateScannerUi() {
+      const locked = state.locked;
+      const paused = !state.scanning && !locked;
+      const phaseName = locked ? (state.viewMode === "video" ? "VIDEO_DECODE" : "LOCKED") : paused ? "PAUSED" : state.scannerPhase;
+      const phaseDetail = locked && state.viewMode === "video"
+        ? `LO fixed ${formatFrequency(state.currentLO)} MHz · scanner suspended`
+        : paused ? "waterfall stream idle · resume to continue" : state.scannerPhaseDetail;
+      el("statusPill").classList.toggle("locked", locked);
+      el("statusPill").classList.toggle("paused", paused);
+      el("statusText").textContent = phaseName;
+      el("scannerPhase").textContent = phaseName;
+      el("scannerPhaseDetail").textContent = phaseDetail;
+      el("scanToggle").disabled = locked;
+      el("scanToggleLabel").textContent = locked ? "Фіксація" : state.scanning ? "Пауза" : "Продовжити";
+      el("scanOrbit").classList.toggle("paused", !state.scanning || locked);
+      el("scanToggleIcon").innerHTML = locked
+        ? '<path d="M7 11V8a5 5 0 0 1 10 0v3"/><path d="M5 11h14v10H5z"/>'
+        : state.scanning ? '<path d="M8 5v14M16 5v14"/>' : '<path d="m8 5 11 7-11 7V5Z"/>';
+      el("lockButton").textContent = locked ? "Відпустити" : "Зафіксувати";
+      el("candidateQueueTitle").textContent = locked && state.viewMode === "video" ? "Scan paused: decoder owns SDR" : "Revisit queue: 3";
+      el("candidateVote").textContent = locked && state.viewMode === "video" ? "LO locked" : `vote ${(state.completedSteps % 3) + 1} / 3`;
+    }
+
+    function toggleScan() {
+      if (state.locked) return;
+      state.scanning = !state.scanning;
+      if (state.scanning) {
+        state.phaseIndex = -1;
+        state.scannerPhase = "FAST_SCAN";
+        state.scannerPhaseDetail = "waterfall scan resumed · next LO window queued";
+      }
+      updateScannerUi();
+      appendLog(state.scanning ? "success" : "warning", state.scanning ? "Сканування <strong>продовжено</strong>" : "Сканування призупинено користувачем");
+    }
+
+    function scanTick() {
+      updateLogSummary();
+      if (!state.scanning || state.locked) return;
+      state.phaseIndex = (state.phaseIndex + 1) % scanPhases.length;
+      let phase = scanPhases[state.phaseIndex];
+      let band = bands[state.activeBand];
+
+      if (phase.name === "RETUNING") {
+        state.channel += 1;
+        if (state.channel > band.channels) {
+          appendLog("system", `Завершено sweep <strong>${band.label}</strong> · ${band.channels} вікон`);
+          const nextBandKey = bandOrder[(state.bandOrderIndex + 1) % bandOrder.length];
+          setActiveBand(nextBandKey, false);
+          band = bands[nextBandKey];
+          appendLog("system", `${band.rfPath} / MUX ${band.mux} · BPF <strong>${band.label}</strong> ready`);
+        }
+        state.currentLO = centerForChannel(band, state.channel);
+        state.completedSteps += 1;
+        state.progress = band.channels === 1 ? 100 : ((state.channel - 1) / (band.channels - 1)) * 100;
+        el("currentFrequency").textContent = formatFrequency(state.currentLO);
+        el("channelIndex").textContent = `${state.channel} / ${band.channels}`;
+        el("progressBar").style.width = `${state.progress}%`;
+        el("scanCursor").style.setProperty("--cursor-position", `${state.progress}%`);
+        el("retuneLatency").textContent = `${(7.2 + Math.random() * 3.4).toFixed(1)} ms`;
+        updateSpectrumLabels(state.currentLO);
+      }
+
+      if (phase.name === "COLLECTING") {
+        state.fftFrames += 6;
+        state.fftSequence += 6;
+        el("fftFrames").textContent = "6 valid";
+        el("fftSequence").textContent = `#${state.fftSequence.toLocaleString("uk-UA")}`;
+        el("wsLatency").textContent = `${(12.6 + Math.random() * 3.1).toFixed(1)} ms`;
+      }
+
+      if (phase.name === "ANALYZING") {
+        el("noiseFloor").textContent = `−${(89.4 + Math.random() * 3.6).toFixed(1)} dBFS`;
+        if (state.completedSteps > 0 && state.completedSteps % 9 === 0 && state.lastRevisitStep !== state.completedSteps) {
+          state.lastRevisitStep = state.completedSteps;
+          phase = { name: "CANDIDATE_REVISIT", detail: "75 ms · merged by frequency · vote 2/3" };
+          appendLog("success", `Candidate revisit · <strong>${formatFrequency(state.currentLO)} MHz</strong> · vote 2/3`);
+        }
+      }
+
+      setScannerPhase(phase.name, phase.detail);
+      drawSpectrum(state.currentLO);
+    }
+
+    function setupCanvas(canvas) {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, width: rect.width, height: rect.height };
+    }
+
+    function drawSpectrum(current = state.currentLO) {
+      const canvas = el("spectrumCanvas");
+      const { ctx, width, height } = setupCanvas(canvas);
+      if (!width || !height) return;
+      ctx.clearRect(0, 0, width, height);
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, "rgba(86,229,209,.32)");
+      gradient.addColorStop(1, "rgba(86,229,209,0)");
+      const sampleSpan = 30.72;
+      const windowStart = current - sampleSpan / 2;
+      const peaks = signals
+        .filter(signal => signal.band === state.activeBand && !signal.dismissed && Math.abs(signal.freq - current) <= sampleSpan / 2)
+        .map(signal => ({ x: (signal.freq - windowStart) / sampleSpan, power: meterWidth(signal.rssi) / 100 }));
+      const points = [];
+      for (let x = 0; x <= width; x += 3) {
+        const nx = x / width;
+        let amp = .08 + Math.random() * .075 + Math.sin(nx * 35) * .018;
+        peaks.forEach(peak => {
+          const distance = Math.abs(nx - peak.x);
+          amp += Math.exp(-(distance * distance) / .00042) * (.34 + peak.power * .43);
+        });
+        amp += Math.exp(-Math.pow(nx - .5, 2) / .00018) * .035;
+        points.push([x, height - 18 - Math.min(.94, amp) * (height - 36)]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(0, height - 18);
+      points.forEach(point => ctx.lineTo(point[0], point[1]));
+      ctx.lineTo(width, height - 18);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      ctx.beginPath();
+      points.forEach((point, index) => index ? ctx.lineTo(point[0], point[1]) : ctx.moveTo(point[0], point[1]));
+      ctx.strokeStyle = "#56e5d1";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      peaks.forEach(peak => {
+        const x = peak.x * width;
+        ctx.beginPath(); ctx.arc(x, 9, 2.5, 0, Math.PI * 2); ctx.fillStyle = "#87ed9b"; ctx.fill();
+        ctx.beginPath(); ctx.moveTo(x, 14); ctx.lineTo(x, height - 18); ctx.strokeStyle = "rgba(135,237,155,.18)"; ctx.lineWidth = 1; ctx.stroke();
+      });
+    }
+
+    function drawFocus(signal) {
+      const canvas = el("focusCanvas");
+      const { ctx, width, height } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, width, height);
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, "rgba(122,168,255,.2)");
+      gradient.addColorStop(.5, "rgba(86,229,209,.8)");
+      gradient.addColorStop(1, "rgba(122,168,255,.2)");
+      ctx.beginPath();
+      for (let x = 0; x <= width; x += 2) {
+        const n = x / width;
+        const envelope = Math.exp(-Math.pow(n - .5, 2) / (signal.type === "digital" ? .07 : .018));
+        const y = height / 2 + (Math.sin(x * .31) + Math.sin(x * .09)) * 2.2 - envelope * (height * .31);
+        x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+
+    function exportCsv() {
+      const rows = [
+        ["measured_mhz", "nominal_fpv_mhz", "channel", "offset_mhz", "scan_range", "type", "peak_dbfs", "noise_floor_dbfs", "snr_db", "bandwidth_mhz", "direction", "rssi_trend_db_s", "confidence_percent", "status", "first_seen", "last_seen", "count"],
+        ...signals.filter(s => !s.dismissed).map(s => [s.freq.toFixed(1), s.nominal?.toFixed(1) ?? "", s.channel, s.offset?.toFixed(1) ?? "", s.range, s.label, s.rssi.toFixed(1), s.noiseFloor.toFixed(1), s.snr.toFixed(1), s.bandwidth.toFixed(1), directionMeta(s.direction).label, s.trend.toFixed(1), s.confidence, s.status, s.firstSeen, s.lastSeen, s.seen])
+      ];
+      const csv = rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
+      const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "sdr-signals.csv";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      appendLog("success", "Список сигналів експортовано у <strong>CSV</strong>");
+      toast("CSV-файл сформовано");
+    }
+
+
+    function androidBridge() {
+      return window.AndroidScanner || null;
+    }
+
+    function callAndroid(command, ...args) {
+      const bridge = androidBridge();
+      if (!bridge || typeof bridge[command] !== "function") {
+        if (!demoMode) toast("Android bridge is not ready");
+        return false;
+      }
+      bridge[command](...args.map(value => String(value)));
+      return true;
+    }
+
+    function scanConfigJsonFromInputs() {
+      const numberValue = id => Number(String(el(id).value).replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "0");
+      return JSON.stringify({
+        sampleRateHz: Math.round(numberValue("sampleRate") * 1_000_000),
+        rfBandwidthHz: Math.round(numberValue("rfBandwidth") * 1_000_000),
+        frequencyStepHz: Math.round(numberValue("frequencyStep") * 1_000_000),
+        usableSpanHz: Math.round(numberValue("usableSpan") * 1_000_000),
+        loSettlingMs: Math.round(numberValue("loSettling")),
+        discardedFramesAfterRetune: Math.round(numberValue("discardFrames")),
+        fastMeasurementMs: Math.round(numberValue("fastMeasurement")),
+        retuneTimeoutMs: Math.round(numberValue("retuneTimeout")),
+        candidateMeasurementMs: Math.round(numberValue("candidateMeasurement")),
+        candidateRevisitCount: Math.round(numberValue("revisitCount")),
+        requiredPositiveRevisits: Math.round(numberValue("positiveRevisits")),
+        fpvMatchToleranceHz: Math.round(numberValue("fpvTolerance") * 1_000_000),
+        minSnrDb: numberValue("threshold")
+      });
+    }
+
+    function bandForRange(range, mhz) {
+      if (range === "band_1g2" || (mhz >= 1200 && mhz < 1400)) return "1.2";
+      if (range === "band_2g4" || (mhz >= 2300 && mhz < 2500)) return "2.4";
+      if (range === "band_3g3" || (mhz >= 3200 && mhz < 3500)) return "3.3";
+      return "5.x";
+    }
+
+    function signalFromSnapshotRecord(record) {
+      const measuredMhz = Number(record.measuredFrequencyMHz ?? ((record.measuredFrequencyHz ?? 0) / 1_000_000));
+      const nominalMhz = record.nominalFrequencyMHz == null ? null : Number(record.nominalFrequencyMHz);
+      const signalType = String(record.signalType || "UNKNOWN").toUpperCase();
+      const type = signalType === "ANALOG" || signalType === "ANALOG_FPV" ? "analog" : signalType === "NARROWBAND" || signalType === "WIDEBAND_UNKNOWN" ? "digital" : "unknown";
+      const label = signalType === "ANALOG" || signalType === "ANALOG_FPV" ? "Analog FPV" : signalType.replaceAll("_", " ").toLowerCase();
+      const lastSeen = record.lastSeenTimestampMs ? new Date(record.lastSeenTimestampMs).toLocaleTimeString("uk-UA", { hour12: false }) : "--";
+      const firstSeen = record.firstSeenTimestampMs ? new Date(record.firstSeenTimestampMs).toLocaleTimeString("uk-UA", { hour12: false }) : lastSeen;
+      return {
+        id: Number(record.id || record.measuredFrequencyHz || Math.round(measuredMhz * 1_000_000)),
+        freq: measuredMhz,
+        nominal: nominalMhz,
+        channel: record.nominalFrequencyHz ? `${record.bandName} / ${record.channelName}` : "UNALIGNED",
+        offset: record.frequencyOffsetMHz == null ? null : Number(record.frequencyOffsetMHz),
+        band: bandForRange(record.scanRange, measuredMhz),
+        range: record.scanRange || record.bandName || "unknown",
+        type,
+        label,
+        detail: record.diagnostic || record.status || "scanner candidate",
+        rssi: Number(record.peakPowerDb ?? -120),
+        noiseFloor: Number(record.noiseFloorDb ?? -120),
+        snr: Number(record.snrDb ?? 0),
+        bandwidth: Number(record.occupiedBandwidthMHz ?? ((record.occupiedBandwidthHz ?? 0) / 1_000_000)),
+        direction: String(record.direction || "UNKNOWN").toLowerCase() === "approaching" ? "approaching" : String(record.direction || "UNKNOWN").toLowerCase() === "receding" ? "receding" : "static",
+        trend: 0,
+        confidence: Math.round(Number(record.classificationConfidence ?? 0) * 100),
+        status: record.status || "confirmed",
+        firstSeen,
+        lastSeen,
+        seen: Number(record.detectionCount ?? 1)
+      };
+    }
+
+    function setVisualModeFromSnapshot(videoMode) {
+      state.viewMode = videoMode ? "video" : "spectrum";
+      state.locked = videoMode;
+      el("visualStage").classList.toggle("video-mode", videoMode);
+      el("spectrumCanvas").hidden = videoMode;
+      el("spectrumOverlay").hidden = videoMode;
+      el("decodedVideo").hidden = true;
+      el("videoDemoBadge").hidden = !videoMode;
+      if (videoMode) el("videoDemoBadge").textContent = "Native Android video decode";
+      el("progressTrack").hidden = videoMode;
+      el("spectrumViewButton").setAttribute("aria-pressed", String(!videoMode));
+      el("videoViewButton").setAttribute("aria-pressed", String(videoMode));
+    }
+
+    function applySnapshot(snapshot) {
+      if (!snapshot || snapshot.schemaVersion !== 1) return;
+      const operatingMode = String(snapshot.operatingMode || "IDLE");
+      const scannerState = String(snapshot.scannerState || "STOPPED");
+      const loMhz = Number((snapshot.currentLoFrequencyHz ?? 0) / 1_000_000);
+      state.scanning = operatingMode === "MAIA_SCAN" && scannerState !== "PAUSED" && scannerState !== "STOPPED";
+      state.currentLO = loMhz || state.currentLO;
+      state.activeBand = bandForRange(snapshot.activeScanRange, state.currentLO);
+      const band = bands[state.activeBand] || bands["5.x"];
+      document.querySelectorAll(".band-button[data-band]").forEach(button => button.classList.toggle("active", button.dataset.band === state.activeBand));
+      el("activeBandLabel").textContent = `Maia waterfall ? ${snapshot.activeScanRange || band.label}`;
+      el("currentFrequency").textContent = formatFrequency(state.currentLO);
+      const total = Number(snapshot.scanWindowTotal || 0);
+      const index = Number(snapshot.scanWindowIndex || 0);
+      el("channelIndex").textContent = total > 0 ? `${index} / ${total}` : "-- / --";
+      const progress = total > 0 ? Math.min(100, Math.max(0, index / total * 100)) : 0;
+      el("progressBar").style.width = `${progress}%`;
+      el("scanCursor").style.setProperty("--cursor-position", `${progress}%`);
+      el("scannerPhase").textContent = scannerState;
+      el("scannerPhaseDetail").textContent = snapshot.activeScanRange || "scanner idle";
+      el("statusText").textContent = operatingMode === "VIDEO_DECODE" ? "VIDEO_DECODE" : scannerState;
+      const stats = snapshot.statistics || {};
+      el("fftFrames").textContent = `${stats.receivedFftFrames ?? 0} rx`;
+      el("fftSequence").textContent = `#${stats.receivedFftFrames ?? 0}`;
+      el("retuneLatency").textContent = `${Number(snapshot.retuneLatencyMs ?? stats.averageRetuneLatencyMs ?? 0).toFixed(1)} ms`;
+      el("noiseFloor").textContent = snapshot.noiseFloorDb == null ? "-- dBFS" : `${Number(snapshot.noiseFloorDb).toFixed(1)} dBFS`;
+      el("wsLatency").textContent = `${stats.websocketReconnects ?? 0} reconnects`;
+      signals = (snapshot.confirmedSignals || []).map(signalFromSnapshotRecord);
+      if (signals.length && !signals.some(signal => signal.id === state.selectedSignal)) state.selectedSignal = signals[0].id;
+      renderSignals();
+      const selected = signals.find(signal => signal.id === state.selectedSignal);
+      if (selected) selectSignal(selected.id);
+      else {
+        el("focusBadge").textContent = "NO SIGNAL";
+        el("focusBadge").className = "type-badge unknown";
+        el("focusFrequency").textContent = "--";
+        el("focusDescription").textContent = "Waiting for confirmed Maia scanner candidates";
+        el("focusRssi").textContent = "--";
+        el("focusNoise").textContent = "--";
+        el("focusSnr").textContent = "--";
+        el("focusBandwidth").textContent = "--";
+      }
+      setVisualModeFromSnapshot(operatingMode === "VIDEO_DECODE");
+      updateScannerUi();
+    }
+
+    function drawSpectrumFrame(frame) {
+      const values = frame?.powerDb || [];
+      if (!values.length) return;
+      const canvas = el("spectrumCanvas");
+      const { ctx, width, height } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, width, height);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const span = Math.max(1, max - min);
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, "rgba(86,229,209,.34)");
+      gradient.addColorStop(1, "rgba(86,229,209,0)");
+      ctx.beginPath();
+      ctx.moveTo(0, height - 18);
+      values.forEach((value, index) => {
+        const x = values.length === 1 ? 0 : index / (values.length - 1) * width;
+        const y = height - 18 - ((value - min) / span) * (height - 32);
+        ctx.lineTo(x, y);
+      });
+      ctx.lineTo(width, height - 18);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      ctx.beginPath();
+      values.forEach((value, index) => {
+        const x = values.length === 1 ? 0 : index / (values.length - 1) * width;
+        const y = height - 18 - ((value - min) / span) * (height - 32);
+        index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = "#56e5d1";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      updateSpectrumLabels(Number((frame.centerFrequencyHz || 0) / 1_000_000) || state.currentLO);
+    }
+
+    window.scannerUi = {
+      applySnapshot,
+      updateSpectrum: drawSpectrumFrame,
+      appendEvent(event) {
+        if (!event) return;
+        appendLog(event.type || "system", event.message || "scanner event");
+      }
+    };
+
+    if (!demoMode) {
+      el("decodedVideo").removeAttribute("src");
+      el("decodedVideo").querySelectorAll("source").forEach(source => source.remove());
+      el("eventLog").innerHTML = "";
+      state.logCount = 0;
+    }
+
+    el("mainMenuButton").addEventListener("click", openMainMenu);
+    el("mainMenuClose").addEventListener("click", () => closeMainMenu());
+    el("menuBackdrop").addEventListener("click", () => closeMainMenu());
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && el("mainMenuDrawer").classList.contains("open")) closeMainMenu();
+    });
+    document.querySelectorAll(".band-button[data-band]").forEach(button => button.addEventListener("click", () => { setActiveBand(button.dataset.band); closeMainMenu(); }));
+    el("scanToggle").addEventListener("click", () => {
+      if (demoMode) toggleScan();
+      else if (state.scanning) callAndroid("pauseScan");
+      else callAndroid("resumeScan");
+    });
+    el("spectrumViewButton").addEventListener("click", () => demoMode ? setViewMode("spectrum", true) : callAndroid("showSpectrum"));
+    el("videoViewButton").addEventListener("click", () => demoMode ? setViewMode("video", true) : callAndroid("showVideo"));
+    el("signalFilter").addEventListener("change", event => { state.filter = event.target.value; renderSignals(); });
+    el("exportButton").addEventListener("click", exportCsv);
+    ["sampleRate", "rfBandwidth", "frequencyStep", "usableSpan", "loSettling", "discardFrames", "fastMeasurement", "dwellTime", "retuneTimeout", "candidateMeasurement", "revisitCount", "positiveRevisits", "fpvTolerance", "threshold"].forEach(id => {
+      el(id).addEventListener("change", event => appendLog("system", `${event.target.previousElementSibling.textContent}: <strong>${event.target.value}</strong>`));
+    });
+    el("resetSettings").addEventListener("click", () => {
+      const defaults = { sampleRate: "30.72 MSPS", rfBandwidth: "18 MHz", frequencyStep: "15 MHz", usableSpan: "15 MHz", loSettling: 5, discardFrames: 2, fastMeasurement: 10, dwellTime: 18, retuneTimeout: 250, candidateMeasurement: 75, revisitCount: 3, positiveRevisits: 2, fpvTolerance: 2.0, threshold: 9 };
+      Object.entries(defaults).forEach(([id, value]) => { el(id).value = value; });
+      appendLog("system", "Maia scan profile повернуто до типових значень"); toast("Типовий профіль відновлено");
+    });
+    el("applyScanConfig").addEventListener("click", () => {
+      if (state.viewMode === "video") setViewMode("spectrum");
+      state.locked = false;
+      state.scanning = true;
+      state.phaseIndex = -1;
+      setScannerPhase("CONFIGURING", "sending Maia waterfall profile · timeout guard 250 ms");
+      appendLog("system", `Профіль застосовано · <strong>${el("sampleRate").value} / RF BW ${el("rfBandwidth").value}</strong> · step ${el("frequencyStep").value}`);
+      closeMainMenu();
+      toast("Сканер перезапущено з новим профілем");
+    });
+    el("clearLog").addEventListener("click", () => { el("eventLog").innerHTML = ""; state.logCount = 0; updateLogSummary(); toast("Журнал очищено"); });
+    el("soundButton").addEventListener("click", () => { state.muted = !state.muted; el("soundButton").setAttribute("aria-pressed", String(!state.muted)); el("soundButton").setAttribute("aria-label", state.muted ? "Увімкнути звуки" : "Вимкнути звуки"); toast(state.muted ? "Звукові сповіщення вимкнено" : "Звукові сповіщення увімкнено"); });
+    el("lockButton").addEventListener("click", () => {
+      const signal = signals.find(item => item.id === state.selectedSignal); if (!signal) return;
+      if (state.viewMode === "video") {
+        setViewMode("spectrum", true);
+        return;
+      }
+      state.locked = !state.locked;
+      state.scanning = !state.locked;
+      updateScannerUi();
+      if (state.locked) {
+        state.currentLO = signal.freq;
+        el("currentFrequency").textContent = formatFrequency(signal.freq);
+        setScannerPhase("LOCKED", `LO fixed ${formatFrequency(signal.freq)} MHz · manual hold`);
+        appendLog("success", `Приймач зафіксовано на <strong>${formatFrequency(signal.freq)} MHz</strong>`);
+      }
+      else {
+        state.phaseIndex = -1;
+        setScannerPhase("FAST_SCAN", "manual hold released · next LO window queued");
+        appendLog("system", "Фіксацію знято · сканування продовжується");
+      }
+    });
+    el("skipButton").addEventListener("click", () => {
+      const signal = signals.find(item => item.id === state.selectedSignal); if (!signal) return;
+      appendLog("warning", `Пропущено сигнал <strong>${formatFrequency(signal.freq)} MHz</strong>`);
+      if (state.viewMode === "video") setViewMode("spectrum");
+      else { state.locked = false; state.scanning = true; updateScannerUi(); }
+      scanTick();
+      toast("Сканування продовжено");
+    });
+
+    window.addEventListener("resize", () => { drawSpectrum(); const signal = signals.find(item => item.id === state.selectedSignal); if (signal) drawFocus(signal); });
+
+    bindSignalTable();
+    renderSignals();
+    renderInitialLogs();
+    if (demoMode && signals.length) selectSignal(signals[0].id);
+    setActiveBand("5.x", false);
+    updateScannerUi();
+    if (demoMode) setInterval(scanTick, 650);
+    setInterval(updateLogSummary, 1000);
+  </script>
+</body>
+</html>

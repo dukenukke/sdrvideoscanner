@@ -13,7 +13,8 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         android:orientation="horizontal"
-        android:gravity="center_vertical">
+        android:gravity="center_vertical"
+        android:visibility="gone">
 
         <Button
             android:id="@+id/main_menu_button"
@@ -49,7 +50,8 @@
         android:layout_marginEnd="8dp"
         android:text="Scanner: idle"
         android:textSize="14sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/gain_debug_label"
@@ -59,7 +61,15 @@
         android:layout_marginTop="4dp"
         android:layout_marginEnd="8dp"
         android:text="Gain: DIRECT_PLUTO / SCAN"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <WebView
+        android:id="@+id/scanner_web_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="0dp"
+        android:layout_weight="1" />
 
     <ScrollView
         android:id="@+id/signal_table_scroll"
@@ -67,7 +77,8 @@
         android:layout_height="0dp"
         android:layout_marginTop="6dp"
         android:layout_weight="1"
-        android:fillViewport="false">
+        android:fillViewport="false"
+        android:visibility="gone">
 
         <LinearLayout
             android:id="@+id/detected_signals_container"
@@ -142,7 +153,7 @@
         android:layout_marginTop="6dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:visibility="visible"
+        android:visibility="gone"
         tools:visibility="visible">
 
         <Button
@@ -177,7 +188,8 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:visibility="gone">
 
         <Button
             android:id="@+id/scan_button"
