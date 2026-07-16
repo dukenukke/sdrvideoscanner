@@ -128,7 +128,16 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
     const auto lineLengthSamples = samplesPerLine(sampleRateHz);
     const auto activeOffset = activeStartOffset(sampleRateHz);
     const auto samplesPerActiveLine = activeSamples(sampleRateHz, lineLengthSamples);
-    const auto fieldSpanSyncIndices = shouldBobInterlaced()
+    const auto activeEnd = activeOffset + samplesPerActiveLine;
+    const auto referenceFieldStarts = shouldBobInterlaced()
+            ? chooseReferenceBobFieldStarts(
+                    video,
+                    syncStarts,
+                    frameSyncEdges,
+                    sampleRateHz,
+                    activeEnd)
+            : std::vector<std::size_t>{};
+    const auto fieldSpanSyncIndices = referenceFieldStarts.empty() && shouldBobInterlaced()
             ? chooseFieldSpanSyncIndices(
                     video,
                     syncStarts,
@@ -140,11 +149,67 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
             : std::vector<std::size_t>{};
     for (std::uint32_t outputLine = 0; outputLine < frame.height; ++outputLine) {
         const auto sourceLine = shouldBobInterlaced() ? (outputLine / 2U) : outputLine;
-        const auto sourceLineIndex = static_cast<std::size_t>(sourceLine);
-        const auto syncIndex = !fieldSpanSyncIndices.empty() &&
-                        sourceLineIndex < fieldSpanSyncIndices.size()
-                ? fieldSpanSyncIndices[sourceLineIndex]
-                : startSyncIndex + sourceLineIndex;
+        if (!referenceFieldStarts.empty()) {
+            const auto sourceIndex = std::min<std::size_t>(
+                    static_cast<std::size_t>(sourceLine),
+                    referenceFieldStarts.size() - 1U);
+            const auto nextIndex = std::min<std::size_t>(sourceIndex + 1U, referenceFieldStarts.size() - 1U);
+            const auto lineStart = referenceFieldStarts[sourceIndex] + activeOffset;
+            if ((outputLine & 1U) == 0U || nextIndex == sourceIndex) {
+                copyResampledLine(video, lineStart, samplesPerActiveLine, frame, outputLine);
+            } else {
+                const auto nextLineStart = referenceFieldStarts[nextIndex] + activeOffset;
+                auto* output = frame.pixels.data() + (static_cast<std::size_t>(outputLine) * frame.width);
+                const auto availableA = lineStart < video.size()
+                        ? std::min(samplesPerActiveLine, video.size() - lineStart)
+                        : 0U;
+                const auto availableB = nextLineStart < video.size()
+                        ? std::min(samplesPerActiveLine, video.size() - nextLineStart)
+                        : 0U;
+                if (availableA == 0U || availableB == 0U) {
+                    continue;
+                }
+                if (frame.width == 1U || availableA == 1U || availableB == 1U) {
+                    const auto value = static_cast<std::uint8_t>(
+                            (static_cast<unsigned>(video[lineStart]) +
+                             static_cast<unsigned>(video[nextLineStart])) /
+                            2U);
+                    std::fill(output, output + frame.width, value);
+                    continue;
+                }
+                const double scaleA = static_cast<double>(availableA - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                const double scaleB = static_cast<double>(availableB - 1U) /
+                        static_cast<double>(frame.width - 1U);
+                for (std::uint32_t x = 0; x < frame.width; ++x) {
+                    const double sourcePositionA = static_cast<double>(x) * scaleA;
+                    const auto leftA = static_cast<std::size_t>(sourcePositionA);
+                    const auto rightA = std::min<std::size_t>(leftA + 1U, availableA - 1U);
+                    const double fractionA = sourcePositionA - static_cast<double>(leftA);
+                    const double valueA =
+                            (static_cast<double>(video[lineStart + leftA]) * (1.0 - fractionA)) +
+                            (static_cast<double>(video[lineStart + rightA]) * fractionA);
+
+                    const double sourcePositionB = static_cast<double>(x) * scaleB;
+                    const auto leftB = static_cast<std::size_t>(sourcePositionB);
+                    const auto rightB = std::min<std::size_t>(leftB + 1U, availableB - 1U);
+                    const double fractionB = sourcePositionB - static_cast<double>(leftB);
+                    const double valueB =
+                            (static_cast<double>(video[nextLineStart + leftB]) * (1.0 - fractionB)) +
+                            (static_cast<double>(video[nextLineStart + rightB]) * fractionB);
+
+                    output[x] = static_cast<std::uint8_t>(
+                            std::clamp((valueA + valueB) * 0.5, 0.0, 255.0) + 0.5);
+                }
+            }
+            continue;
+        }
+
+        const auto syncIndex = !fieldSpanSyncIndices.empty()
+                ? fieldSpanSyncIndices[std::min<std::size_t>(
+                        static_cast<std::size_t>(sourceLine),
+                        fieldSpanSyncIndices.size() - 1U)]
+                : startSyncIndex + static_cast<std::size_t>(sourceLine);
         if (syncIndex >= syncStarts.size()) {
             break;
         }
@@ -154,9 +219,11 @@ VideoFrame FrameAssembler::assembleFieldPreviewFromSync(
     }
 
     frame.message = shouldBobInterlaced()
-            ? (!fieldSpanSyncIndices.empty()
+            ? (!referenceFieldStarts.empty()
+                    ? "fast playback field preview from reference frame-sync spans; interlaced bob"
+                    : !fieldSpanSyncIndices.empty()
                     ? "fast playback field preview from bounded frame-sync span; interlaced bob"
-                    : "fast playback field preview from locked horizontal sync; interlaced bob")
+                    : "fast playback field preview from horizontal sync; interlaced bob")
             : "fast playback frame preview from horizontal sync";
     return frame;
 }
@@ -425,7 +492,7 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
         std::size_t activeOffset,
         std::size_t samplesPerActiveLine) const {
     std::vector<std::size_t> bestIndices;
-    if (!shouldBobInterlaced() || syncStarts.empty() || frameSyncEdges.empty()) {
+    if (!shouldBobInterlaced() || syncStarts.empty() || frameSyncEdges.size() < 2U) {
         return bestIndices;
     }
 
@@ -438,17 +505,10 @@ std::vector<std::size_t> FrameAssembler::chooseFieldSpanSyncIndices(
             static_cast<std::size_t>(std::round(static_cast<double>(sourceLineCount) * 0.85)));
 
     auto bestPhaseDistance = static_cast<std::size_t>(-1);
-    for (std::size_t span = 0; span < frameSyncEdges.size(); ++span) {
+    for (std::size_t span = 0; span + 1U < frameSyncEdges.size(); ++span) {
         const auto spanStart = frameSyncEdges[span];
-        const auto spanEnd = span + 1U < frameSyncEdges.size()
-                ? frameSyncEdges[span + 1U]
-                : spanStart + static_cast<std::size_t>(
-                        std::round(static_cast<double>(fieldLineCount) *
-                                   static_cast<double>(lineLengthSamples)));
+        const auto spanEnd = frameSyncEdges[span + 1U];
         if (spanEnd <= spanStart + lineLengthSamples) {
-            continue;
-        }
-        if (spanEnd > video.size()) {
             continue;
         }
 

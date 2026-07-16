@@ -2,6 +2,28 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+fun gitOutput(vararg args: String): String {
+    val bundledGit = file("C:/Program Files/Git/cmd/git.exe")
+    val command = listOf(if (bundledGit.exists()) bundledGit.absolutePath else "git") + args
+    return providers.exec {
+        workingDir(rootDir)
+        commandLine(command)
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim()
+}
+
+fun buildConfigString(value: String): String {
+    val escaped = value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+    return "\"$escaped\""
+}
+
+val gitBranch = gitOutput("rev-parse", "--abbrev-ref", "HEAD").ifBlank { "unknown" }
+val gitCommitCount = gitOutput("rev-list", "--count", "HEAD").ifBlank { "0" }
+val gitShortSha = gitOutput("rev-parse", "--short", "HEAD").ifBlank { "unknown" }
+val gitDirtySuffix = if (gitOutput("status", "--porcelain").isBlank()) "" else "-dirty"
+
 android {
     namespace = "com.example.sdrvideoscanner"
     compileSdk {
@@ -16,6 +38,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "GIT_BRANCH", buildConfigString(gitBranch))
+        buildConfigField("String", "BUILD_NUMBER", buildConfigString("$gitCommitCount$gitDirtySuffix"))
+        buildConfigField("String", "GIT_SHA", buildConfigString(gitShortSha))
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
@@ -52,6 +77,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 

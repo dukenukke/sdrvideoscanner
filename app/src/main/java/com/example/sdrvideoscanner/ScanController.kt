@@ -4,7 +4,6 @@ import kotlin.math.abs
 
 class ScanController(
     channels: List<KnownChannel>,
-    private val rfFrontendController: IRfFrontendController,
     private val staleTimeoutMs: Long = DEFAULT_STALE_TIMEOUT_MS,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -30,6 +29,10 @@ class ScanController(
 
     fun backgroundScanWhilePlaying() {
         state = ScannerState.BACKGROUND_SCAN_WHILE_PLAYING
+    }
+
+    fun error() {
+        state = ScannerState.ERROR
     }
 
     fun idle() {
@@ -62,14 +65,6 @@ class ScanController(
         return channels.indices.minBy { index ->
             abs(channels[index].centerFrequencyHz - frequencyHz)
         }
-    }
-
-    fun configureFrontend(channel: KnownChannel): Boolean {
-        return rfFrontendController.selectBandProfile(channel.rfFrontendProfileId) &&
-            rfFrontendController.selectAntennaPath(channel.rfFrontendProfileId) &&
-            rfFrontendController.selectBpfPath(channel.rfFrontendProfileId) &&
-            rfFrontendController.setLnaEnabled(true) &&
-            rfFrontendController.selectMixerProfile(channel.rfFrontendProfileId)
     }
 
     fun applyProbeResult(channel: KnownChannel, result: SignalProbeResult): List<DetectedSignalRecord> {
