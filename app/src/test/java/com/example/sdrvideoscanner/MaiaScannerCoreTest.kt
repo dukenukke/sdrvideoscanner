@@ -51,6 +51,104 @@ class MaiaScannerCoreTest {
     }
 
     @Test
+    fun displaySpectrumUsesCentralUsableBinsForDefaultMaiaSpan() {
+        val centerHz = 5_800_000_000L
+        val config = MaiaScanConfig(sampleRateHz = 30_720_000L, usableSpanHz = 15_000_000L)
+        val frame = WaterfallFrame(
+            centerFrequencyHz = centerHz,
+            sampleRateHz = config.sampleRateHz,
+            bandwidthHz = null,
+            sequenceNumber = 1,
+            timestampNs = 1,
+            powerDb = FloatArray(4096) { it.toFloat() },
+        )
+
+        val display = SpectrumDisplayMapper.toDisplayFrame(frame, config, maxBins = 4096)
+        val usableRange = MaiaScanPlanner.usableBinRange(frame, config)
+
+        assertEquals(usableRange.first, display.firstDisplayedBin)
+        assertEquals(usableRange.last, display.lastDisplayedBin)
+        assertEquals(2000, display.displayedBinCount)
+        assertEquals(centerHz - 7_500_000L, display.displayedStartFrequencyHz)
+        assertEquals(centerHz + 7_500_000L, display.displayedEndFrequencyHz)
+        assertEquals(frame.powerDb[usableRange.first], display.powerDb.first(), 0.0f)
+        assertEquals(frame.powerDb[usableRange.last], display.powerDb.last(), 0.0f)
+    }
+
+    @Test
+    fun displaySpectrumExcludesAliasingBinsBeforeDownsampling() {
+        val config = MaiaScanConfig(sampleRateHz = 30_720_000L, usableSpanHz = 15_000_000L)
+        val frame = WaterfallFrame(
+            centerFrequencyHz = 5_800_000_000L,
+            sampleRateHz = config.sampleRateHz,
+            bandwidthHz = null,
+            sequenceNumber = 1,
+            timestampNs = 1,
+            powerDb = FloatArray(4096) { index ->
+                if (index < 1048 || index > 3047) 999.0f else -80.0f
+            },
+        )
+
+        val display = SpectrumDisplayMapper.toDisplayFrame(frame, config, maxBins = 128)
+
+        assertFalse(display.powerDb.any { it == 999.0f })
+        assertTrue(display.powerDb.all { it == -80.0f })
+    }
+
+    @Test
+    fun displaySpectrumTracksUsableSpanConfiguration() {
+        val centerHz = 2_400_000_000L
+        val config = MaiaScanConfig(sampleRateHz = 30_720_000L, usableSpanHz = 12_000_000L)
+        val frame = WaterfallFrame(
+            centerFrequencyHz = centerHz,
+            sampleRateHz = config.sampleRateHz,
+            bandwidthHz = null,
+            sequenceNumber = 1,
+            timestampNs = 1,
+            powerDb = FloatArray(4096) { it.toFloat() },
+        )
+
+        val display = SpectrumDisplayMapper.toDisplayFrame(frame, config, maxBins = 4096)
+        val usableRange = MaiaScanPlanner.usableBinRange(frame, config)
+
+        assertEquals(usableRange.first, display.firstDisplayedBin)
+        assertEquals(usableRange.last, display.lastDisplayedBin)
+        assertEquals(centerHz - 6_000_000L, display.displayedStartFrequencyHz)
+        assertEquals(centerHz + 6_000_000L, display.displayedEndFrequencyHz)
+        assertEquals(config.usableSpanHz, display.usableSpanHz)
+    }
+
+    @Test
+    fun displaySpectrumHandlesOddAndEvenFftSizesWithoutBoundaryLeakage() {
+        val config = MaiaScanConfig(sampleRateHz = 30_720_000L, usableSpanHz = 15_000_000L)
+
+        listOf(4096, 4097).forEach { binCount ->
+            val frame = WaterfallFrame(
+                centerFrequencyHz = 5_800_000_000L,
+                sampleRateHz = config.sampleRateHz,
+                bandwidthHz = null,
+                sequenceNumber = 1,
+                timestampNs = 1,
+                powerDb = FloatArray(binCount) { index ->
+                    when (index) {
+                        0, binCount - 1 -> 500.0f
+                        else -> index.toFloat()
+                    }
+                },
+            )
+            val usableRange = MaiaScanPlanner.usableBinRange(frame, config)
+            val display = SpectrumDisplayMapper.toDisplayFrame(frame, config, maxBins = binCount)
+
+            assertEquals(usableRange.first, display.firstDisplayedBin)
+            assertEquals(usableRange.last, display.lastDisplayedBin)
+            assertEquals(usableRange.count(), display.displayedBinCount)
+            assertFalse(display.powerDb.any { it == 500.0f })
+            assertTrue(MaiaScanPlanner.binFrequencyHz(frame, display.firstDisplayedBin) >= display.displayedStartFrequencyHz)
+            assertTrue(MaiaScanPlanner.binFrequencyHz(frame, display.lastDisplayedBin) <= display.displayedEndFrequencyHz)
+        }
+    }
+
+    @Test
     fun noiseFloorIgnoresStrongUpperTail() {
         val spectrum = FloatArray(100) { if (it < 90) 10.0f else 80.0f }
 

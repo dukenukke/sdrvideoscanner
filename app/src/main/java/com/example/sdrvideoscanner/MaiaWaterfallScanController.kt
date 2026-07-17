@@ -22,6 +22,9 @@ class MaiaWaterfallScanController(
     private val onStateChanged: (MaiaScannerState) -> Unit = {},
     private val onStatisticsChanged: (ScannerStatistics) -> Unit = {},
     private val onConfirmedSignals: (List<DetectedSignalRecord>) -> Unit = {},
+    private val onScanWindowChanged: (window: ScanWindow, index: Int, total: Int) -> Unit = { _, _, _ -> },
+    private val onMeasurement: (SpectrumMeasurement) -> Unit = {},
+    private val onSpectrumFrame: (WaterfallFrame) -> Unit = {},
     private val clockNs: () -> Long = { System.nanoTime() },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -73,8 +76,9 @@ class MaiaWaterfallScanController(
                 val cycleStartNs = clockNs()
                 val passCandidates = mutableListOf<SpectralCandidate>()
                 setState(MaiaScannerState.FAST_SCAN)
-                for (window in windows) {
+                for ((index, window) in windows.withIndex()) {
                     waitIfPaused()
+                    onScanWindowChanged(window, index + 1, windows.size)
                     val stepStartNs = clockNs()
                     selectRfPathIfNeeded(window, config)
                     val measurement = measureWindow(window, config, config.fastMeasurementMs)
@@ -83,6 +87,7 @@ class MaiaWaterfallScanController(
                         onStatisticsChanged(statistics)
                         continue
                     }
+                    onMeasurement(measurement)
                     setState(MaiaScannerState.ANALYZING)
                     passCandidates += detector.detect(measurement, window)
                     statistics = statistics.copy(
@@ -161,6 +166,7 @@ class MaiaWaterfallScanController(
             statistics = statistics.copy(receivedFftFrames = statistics.receivedFftFrames + 1)
             if (isFrameValidForRetune(frame, window.centerFrequencyHz, retuneStartNs)) {
                 aggregator.add(frame)
+                onSpectrumFrame(frame)
             } else {
                 statistics = statistics.copy(droppedFftFrames = statistics.droppedFftFrames + 1)
             }
@@ -188,6 +194,7 @@ class MaiaWaterfallScanController(
                 statistics = statistics.copy(discardedRetuneFrames = statistics.discardedRetuneFrames + 1)
                 continue
             }
+            onSpectrumFrame(frame)
             return frame
         }
         return null
