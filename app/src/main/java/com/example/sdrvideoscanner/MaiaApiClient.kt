@@ -6,7 +6,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.ProtocolException
 import java.net.URL
+
+data class MaiaSpectrometerConfiguration(
+    val input: String?,
+    val mode: String?,
+    val outputSamplingFrequency: Double?,
+    val rawJson: JSONObject,
+)
 
 class MaiaApiClient(
     private val host: String,
@@ -29,18 +37,39 @@ class MaiaApiClient(
         patch("/api/ad9361", JSONObject().put("rx_lo_frequency", centerFrequencyHz))
     }
 
-    suspend fun configureSpectrometer() {
-        patch(
+    suspend fun readSpectrometerConfiguration(): MaiaSpectrometerConfiguration {
+        return parseSpectrometerConfiguration(getJson("/api/spectrometer"))
+    }
+
+    suspend fun configureSpectrometer(outputSamplingFrequency: Double): MaiaSpectrometerConfiguration {
+        val response = patch(
             "/api/spectrometer",
             JSONObject()
                 .put("input", "AD9361")
-                .put("mode", "Average"),
+                .put("mode", "Average")
+                .put("output_sampling_frequency", outputSamplingFrequency),
         )
+        return parseSpectrometerConfiguration(response)
+    }
+
+    suspend fun getAd9361Configuration(): JSONObject {
+        return getJson("/api/ad9361")
     }
 
     suspend fun getAd9361FrequencyHz(): Long? {
-        val json = getJson("/api/ad9361")
+        val json = getAd9361Configuration()
         return json.optLong("rx_lo_frequency").takeIf { it > 0L }
+    }
+
+    private fun parseSpectrometerConfiguration(json: JSONObject): MaiaSpectrometerConfiguration {
+        val outputSamplingFrequency = json.optDouble("output_sampling_frequency", Double.NaN)
+            .takeIf { it.isFinite() && it > 0.0 }
+        return MaiaSpectrometerConfiguration(
+            input = json.optString("input").takeIf { it.isNotBlank() },
+            mode = json.optString("mode").takeIf { it.isNotBlank() },
+            outputSamplingFrequency = outputSamplingFrequency,
+            rawJson = json,
+        )
     }
 
     private suspend fun patch(path: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
@@ -68,9 +97,17 @@ class MaiaApiClient(
 
     private fun openConnection(path: String, method: String): HttpURLConnection {
         val url = URL("http://${endpoint()}$path")
-        Log.i(LOG_TAG, "Maia API $method $url")
+        runCatching { Log.i(LOG_TAG, "Maia API $method $url") }
         return ((network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection).apply {
-            requestMethod = method
+            try {
+                requestMethod = method
+            } catch (error: ProtocolException) {
+                if (method != "PATCH") {
+                    throw error
+                }
+                requestMethod = "POST"
+                setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            }
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
             useCaches = false
@@ -104,7 +141,20 @@ class MaiaHttpRadioTuner(
 
     override suspend fun configure(sampleRateHz: Long, rfBandwidthHz: Long) {
         apiClient.configureAd9361(sampleRateHz, rfBandwidthHz, currentFrequencyHz)
-        apiClient.configureSpectrometer()
+        apiClient.configureSpectrometer(MaiaScanConfig().waterfallFrameRateFps)
+    }
+
+    override suspend fun configureForScan(config: MaiaScanConfig, initialCenterFrequencyHz: Long): MaiaRadioConfigurationResult {
+        runCatching { apiClient.getAd9361Configuration() }
+        runCatching { apiClient.readSpectrometerConfiguration() }
+        apiClient.configureAd9361(config.sampleRateHz, config.rfBandwidthHz, initialCenterFrequencyHz)
+        currentFrequencyHz = initialCenterFrequencyHz
+        val spectrometer = apiClient.configureSpectrometer(config.waterfallFrameRateFps)
+        return MaiaRadioConfigurationResult(
+            requestedWaterfallFrameRateFps = config.waterfallFrameRateFps,
+            actualWaterfallFrameRateFps = spectrometer.outputSamplingFrequency,
+            spectrometerStatus = "accepted",
+        )
     }
 
     override suspend fun tune(centerFrequencyHz: Long) {

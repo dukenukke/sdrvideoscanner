@@ -29,6 +29,13 @@ data class ScannerWebSnapshot(
     val pendingCandidates: List<SpectralCandidate> = emptyList(),
     val diagnostics: String? = null,
     val events: List<ScannerEventRecord> = emptyList(),
+    val requestedWaterfallFrameRateFps: Double? = null,
+    val actualWaterfallFrameRateFps: Double? = null,
+    val spectrometerConfigurationStatus: String? = null,
+    val websocketConnectionStatus: String? = null,
+    val effectiveRetuneTimeoutMs: Long? = null,
+    val staleFramesToDiscard: Int? = null,
+    val latestInitializationError: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
@@ -51,6 +58,13 @@ data class ScannerWebSnapshot(
         .put("events", JSONArray().also { array ->
             events.forEach { array.put(it.toJson()) }
         })
+        .put("requestedWaterfallFrameRateFps", requestedWaterfallFrameRateFps)
+        .put("actualWaterfallFrameRateFps", actualWaterfallFrameRateFps)
+        .put("spectrometerConfigurationStatus", spectrometerConfigurationStatus)
+        .put("websocketConnectionStatus", websocketConnectionStatus)
+        .put("effectiveRetuneTimeoutMs", effectiveRetuneTimeoutMs)
+        .put("staleFramesToDiscard", staleFramesToDiscard)
+        .put("latestInitializationError", latestInitializationError)
 
     companion object {
         const val SCHEMA_VERSION = 1
@@ -87,6 +101,18 @@ object ScannerWebCommandValidator {
             candidateRevisitCount = json.optIntInRange("candidateRevisitCount", defaults.candidateRevisitCount, 1, 10),
             requiredPositiveRevisits = json.optIntInRange("requiredPositiveRevisits", defaults.requiredPositiveRevisits, 1, 10),
             retuneTimeoutMs = json.optLongInRange("retuneTimeoutMs", defaults.retuneTimeoutMs, 10L, 10_000L),
+            retuneTimeoutSafetyMarginMs = json.optLongInRange(
+                "retuneTimeoutSafetyMarginMs",
+                defaults.retuneTimeoutSafetyMarginMs,
+                0L,
+                5_000L,
+            ),
+            waterfallFrameRateFps = json.optDoubleInRange(
+                "waterfallFrameRateFps",
+                defaults.waterfallFrameRateFps,
+                1.0,
+                120.0,
+            ),
             defaultRfPathSettlingMs = json.optLongInRange("defaultRfPathSettlingMs", defaults.defaultRfPathSettlingMs, 0L, 1_000L),
             minSnrDb = json.optFloatInRange("minSnrDb", defaults.minSnrDb, 0.0f, 80.0f),
             minOccupiedBandwidthHz = json.optLongInRange(
@@ -115,6 +141,7 @@ object ScannerWebCommandValidator {
         require(config.minOccupiedBandwidthHz <= config.maxOccupiedBandwidthHz) {
             "minOccupiedBandwidthHz must be <= maxOccupiedBandwidthHz"
         }
+        MaiaScanTiming.validateRetuneTimeout(config)
         val ranges = json.optJSONArray("ranges")?.let { parseRanges(it) }
         return ValidatedScanCommandConfig(config, ranges)
     }
@@ -239,5 +266,11 @@ private fun JSONObject.optIntInRange(key: String, defaultValue: Int, min: Int, m
 private fun JSONObject.optFloatInRange(key: String, defaultValue: Float, min: Float, max: Float): Float {
     val value = if (has(key) && !isNull(key)) optDouble(key).toFloat() else defaultValue
     require(value in min..max) { "$key out of range" }
+    return value
+}
+
+private fun JSONObject.optDoubleInRange(key: String, defaultValue: Double, min: Double, max: Double): Double {
+    val value = if (has(key) && !isNull(key)) optDouble(key) else defaultValue
+    require(value.isFinite() && value in min..max) { "$key out of range" }
     return value
 }

@@ -125,6 +125,14 @@ class MainActivity : AppCompatActivity() {
     private var scannerWebActiveScanConfig: MaiaScanConfig? = null
     private var scannerWebScanConfigOverride: MaiaScanConfig? = null
     private var scannerWebScanRangesOverride: List<ScanRange>? = null
+    private var scannerWebRuntimeStatus: MaiaScannerRuntimeStatus = MaiaScannerRuntimeStatus(
+        requestedWaterfallFrameRateFps = MaiaScanConfig().waterfallFrameRateFps,
+        actualWaterfallFrameRateFps = null,
+        spectrometerStatus = "idle",
+        websocketStatus = "disconnected",
+        effectiveRetuneTimeoutMs = MaiaScanConfig().retuneTimeoutMs,
+        staleFramesToDiscard = MaiaScanConfig().discardedFramesAfterRetune,
+    )
     private val scannerWebEvents = ArrayDeque<ScannerEventRecord>()
     private var lastSpectrumWebUpdateNs = 0L
     private var lastNativeVideoPlacementRequestMs = 0L
@@ -434,8 +442,10 @@ class MainActivity : AppCompatActivity() {
             override fun applyScanConfig(config: ValidatedScanCommandConfig) = runOnMain {
                 scannerWebScanConfigOverride = config.config
                 scannerWebScanRangesOverride = config.ranges
+                saveMaiaScanConfigDefaults(config.config)
                 appendScannerWebEvent("system", "Scan configuration applied from dashboard")
                 if (scannerRunning || maiaWaterfallScanner != null) {
+                    appendScannerWebEvent("warning", "Runtime scan configuration change: closing waterfall WebSocket before reconfiguration")
                     stopScannerMode()
                     startScannerMode()
                 }
@@ -870,6 +880,12 @@ class MainActivity : AppCompatActivity() {
                     }
                     scannerRunning = false
                     scanController.error()
+                    scannerWebRuntimeStatus = scannerWebRuntimeStatus.copy(
+                        spectrometerStatus = "not_started",
+                        websocketStatus = "disconnected",
+                        latestInitializationError = "Android Ethernet network was not found",
+                    )
+                    appendScannerWebEvent("error", "Maia scanner initialization/configuration failed: Android Ethernet network was not found")
                     binding.sampleText.text = "Maia waterfall scanner failed: Android Ethernet network was not found.\n\n" +
                         networkSelection.diagnostics
                     updateSleepBlocker()
@@ -881,6 +897,14 @@ class MainActivity : AppCompatActivity() {
             val scanConfig = scannerWebScanConfigOverride ?: loadMaiaScanConfigDefaults()
             val scanRanges = scannerWebScanRangesOverride ?: loadMaiaScanRanges()
             scannerWebActiveScanConfig = scanConfig
+            scannerWebRuntimeStatus = MaiaScannerRuntimeStatus(
+                requestedWaterfallFrameRateFps = scanConfig.waterfallFrameRateFps,
+                actualWaterfallFrameRateFps = null,
+                spectrometerStatus = "pending",
+                websocketStatus = "disconnected",
+                effectiveRetuneTimeoutMs = scanConfig.retuneTimeoutMs,
+                staleFramesToDiscard = scanConfig.discardedFramesAfterRetune,
+            )
             val source = MaiaWaterfallWebSocketClient(
                 network = plutoNetwork,
                 host = config.maiaHost.ifBlank { MAIA_DEFAULT_HOST },
@@ -888,10 +912,27 @@ class MainActivity : AppCompatActivity() {
                 path = "/waterfall",
                 connectTimeoutMs = PLUTO_WS_CONNECT_TIMEOUT_MS,
                 readTimeoutMs = PLUTO_WS_READ_TIMEOUT_MS,
+                onConnected = {
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebRuntimeStatus = scannerWebRuntimeStatus.copy(websocketStatus = "connected")
+                        appendScannerWebEvent("success", "Waterfall WebSocket connected")
+                        emitScannerSnapshot()
+                    }
+                },
                 onReconnect = {
                     maiaWaterfallStatistics = maiaWaterfallStatistics.copy(
                         websocketReconnects = maiaWaterfallStatistics.websocketReconnects + 1,
                     )
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebRuntimeStatus = scannerWebRuntimeStatus.copy(websocketStatus = "reconnecting")
+                        emitScannerSnapshot()
+                    }
                 },
                 onDroppedFrame = {
                     maiaWaterfallStatistics = maiaWaterfallStatistics.copy(
@@ -929,6 +970,16 @@ class MainActivity : AppCompatActivity() {
                             return@post
                         }
                         maiaWaterfallState = state
+                        if (state == MaiaScannerState.ERROR) {
+                            scannerRunning = false
+                            scanController.error()
+                            scannerWebRuntimeStatus = scannerWebRuntimeStatus.copy(
+                                websocketStatus = "disconnected",
+                                latestInitializationError = scannerWebRuntimeStatus.latestInitializationError
+                                    ?: "Maia scanner entered ERROR",
+                            )
+                            binding.sampleText.text = "Maia waterfall scanner failed.\n\n${scannerWebRuntimeStatus.latestInitializationError}"
+                        }
                         updateScannerUi()
                         emitScannerSnapshot()
                     }
@@ -978,6 +1029,23 @@ class MainActivity : AppCompatActivity() {
                 onSpectrumFrame = { frame ->
                     maybeSendSpectrumFrameToWeb(sessionId, frame)
                 },
+                onRuntimeStatusChanged = { status ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        scannerWebRuntimeStatus = status
+                        emitScannerSnapshot()
+                    }
+                },
+                onEvent = { type, message ->
+                    mainHandler.post {
+                        if (sessionId != scanSessionId) {
+                            return@post
+                        }
+                        appendScannerWebEvent(type, message)
+                    }
+                },
             )
             mainHandler.post {
                 if (sessionId != scanSessionId) {
@@ -996,6 +1064,11 @@ class MainActivity : AppCompatActivity() {
         maiaWaterfallScanner = null
         scannerWebActiveScanConfig = null
         maiaWaterfallState = MaiaScannerState.STOPPED
+        scannerWebRuntimeStatus = scannerWebRuntimeStatus.copy(
+            spectrometerStatus = "idle",
+            websocketStatus = "disconnected",
+            latestInitializationError = null,
+        )
     }
 
     private fun updateMaiaScannerDiagnostic(config: MaiaScanConfig, stats: ScannerStatistics) {
@@ -1029,7 +1102,12 @@ class MainActivity : AppCompatActivity() {
             append("\nusable_span_hz: ${config.usableSpanHz}")
             append("\nlo_settling_ms: ${config.loSettlingMs}")
             append("\nretune_timeout_ms: ${config.retuneTimeoutMs}")
+            append("\neffective_retune_timeout_ms: ${scannerWebRuntimeStatus.effectiveRetuneTimeoutMs}")
             append("\ndiscarded_frames_after_retune: ${config.discardedFramesAfterRetune}")
+            append("\nwaterfall_requested_fps: ${String.format(Locale.US, "%.3f", scannerWebRuntimeStatus.requestedWaterfallFrameRateFps)}")
+            append("\nwaterfall_actual_fps: ${scannerWebRuntimeStatus.actualWaterfallFrameRateFps?.let { String.format(Locale.US, "%.3f", it) } ?: "pending"}")
+            append("\nspectrometer_status: ${scannerWebRuntimeStatus.spectrometerStatus}")
+            append("\nwaterfall_websocket_status: ${scannerWebRuntimeStatus.websocketStatus}")
             append("\nfast_measurement_ms: ${config.fastMeasurementMs}")
             append("\ncandidate_measurement_ms: ${config.candidateMeasurementMs}")
             append("\ncandidate_revisits: ${config.requiredPositiveRevisits}/${config.candidateRevisitCount}")
@@ -1078,6 +1156,13 @@ class MainActivity : AppCompatActivity() {
             confirmedSignals = scanController.records(),
             diagnostics = scannerWebDiagnostics ?: binding.sampleText.text?.toString(),
             events = scannerWebEvents.toList(),
+            requestedWaterfallFrameRateFps = scannerWebRuntimeStatus.requestedWaterfallFrameRateFps,
+            actualWaterfallFrameRateFps = scannerWebRuntimeStatus.actualWaterfallFrameRateFps,
+            spectrometerConfigurationStatus = scannerWebRuntimeStatus.spectrometerStatus,
+            websocketConnectionStatus = scannerWebRuntimeStatus.websocketStatus,
+            effectiveRetuneTimeoutMs = scannerWebRuntimeStatus.effectiveRetuneTimeoutMs,
+            staleFramesToDiscard = scannerWebRuntimeStatus.staleFramesToDiscard,
+            latestInitializationError = scannerWebRuntimeStatus.latestInitializationError,
         )
     }
 
@@ -5244,6 +5329,16 @@ class MainActivity : AppCompatActivity() {
                 defaults.requiredPositiveRevisits,
             ),
             retuneTimeoutMs = preferences.getLong("maia_scan_retune_timeout_ms", defaults.retuneTimeoutMs),
+            retuneTimeoutSafetyMarginMs = preferences.getLong(
+                "maia_scan_retune_timeout_safety_margin_ms",
+                defaults.retuneTimeoutSafetyMarginMs,
+            ),
+            waterfallFrameRateFps = Double.fromBits(
+                preferences.getLong(
+                    "maia_scan_waterfall_frame_rate_fps_bits",
+                    defaults.waterfallFrameRateFps.toBits(),
+                ),
+            ),
             defaultRfPathSettlingMs = preferences.getLong(
                 "maia_scan_default_rf_path_settling_ms",
                 defaults.defaultRfPathSettlingMs,
@@ -5268,6 +5363,33 @@ class MainActivity : AppCompatActivity() {
                 defaults.fpvMatchToleranceHz,
             ),
         )
+    }
+
+    private fun saveMaiaScanConfigDefaults(config: MaiaScanConfig) {
+        getSharedPreferences(PLUTO_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong("maia_scan_sample_rate_hz", config.sampleRateHz)
+            .putLong("maia_scan_rf_bandwidth_hz", config.rfBandwidthHz)
+            .putLong("maia_scan_frequency_step_hz", config.frequencyStepHz)
+            .putLong("maia_scan_usable_span_hz", config.usableSpanHz)
+            .putLong("maia_scan_lo_settling_ms", config.loSettlingMs)
+            .putInt("maia_scan_discarded_frames_after_retune", config.discardedFramesAfterRetune)
+            .putLong("maia_scan_fast_measurement_ms", config.fastMeasurementMs)
+            .putLong("maia_scan_candidate_measurement_ms", config.candidateMeasurementMs)
+            .putInt("maia_scan_candidate_revisit_count", config.candidateRevisitCount)
+            .putInt("maia_scan_required_positive_revisits", config.requiredPositiveRevisits)
+            .putLong("maia_scan_retune_timeout_ms", config.retuneTimeoutMs)
+            .putLong("maia_scan_retune_timeout_safety_margin_ms", config.retuneTimeoutSafetyMarginMs)
+            .putLong("maia_scan_waterfall_frame_rate_fps_bits", config.waterfallFrameRateFps.toBits())
+            .putLong("maia_scan_default_rf_path_settling_ms", config.defaultRfPathSettlingMs)
+            .putInt("maia_scan_min_snr_db_bits", config.minSnrDb.toBits())
+            .putLong("maia_scan_min_occupied_bandwidth_hz", config.minOccupiedBandwidthHz)
+            .putLong("maia_scan_max_occupied_bandwidth_hz", config.maxOccupiedBandwidthHz)
+            .putInt("maia_scan_min_adjacent_bins", config.minAdjacentBins)
+            .putInt("maia_scan_dc_exclusion_bins", config.dcExclusionBins)
+            .putLong("maia_scan_merge_frequency_tolerance_hz", config.mergeFrequencyToleranceHz)
+            .putLong("maia_scan_fpv_match_tolerance_hz", config.fpvMatchToleranceHz)
+            .apply()
     }
 
     private fun loadMaiaScanRanges(): List<ScanRange> {

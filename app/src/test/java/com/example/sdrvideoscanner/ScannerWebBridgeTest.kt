@@ -32,6 +32,7 @@ class ScannerWebBridgeTest {
         )
 
         assertEquals(30_720_000L, validated.config.sampleRateHz)
+        assertEquals(10.0, validated.config.waterfallFrameRateFps, 0.0001)
         assertEquals(1, validated.ranges?.size)
         assertEquals("band_5g8", validated.ranges?.first()?.id)
     }
@@ -46,6 +47,40 @@ class ScannerWebBridgeTest {
         assertEquals(123L, ScannerWebCommandValidator.parseSignalId("123"))
         assertNull(ScannerWebCommandValidator.parseSignalId("-1"))
         assertNull(ScannerWebCommandValidator.parseSignalId("abc"))
+    }
+
+    @Test
+    fun scanConfigValidationPersistsRequestedWaterfallFps() {
+        val validated = ScannerWebCommandValidator.validateScanConfig(
+            """{"waterfallFrameRateFps":7,"retuneTimeoutMs":600}""",
+        )
+
+        assertEquals(7.0, validated.config.waterfallFrameRateFps, 0.0001)
+    }
+
+    @Test
+    fun retuneTimeoutValidationUsesWaterfallFrameRateAndSafetyMargin() {
+        val sevenFps = MaiaScanConfig(
+            waterfallFrameRateFps = 7.0,
+            discardedFramesAfterRetune = 2,
+            loSettlingMs = 5,
+            retuneTimeoutSafetyMarginMs = 75,
+            retuneTimeoutMs = 600,
+        )
+        val tenFps = sevenFps.copy(waterfallFrameRateFps = 10.0, retuneTimeoutMs = 500)
+        val twentyFps = sevenFps.copy(waterfallFrameRateFps = 20.0, retuneTimeoutMs = 250)
+
+        assertEquals(509L, MaiaScanTiming.minimumRetuneTimeoutMs(sevenFps))
+        MaiaScanTiming.validateRetuneTimeout(sevenFps)
+        MaiaScanTiming.validateRetuneTimeout(tenFps)
+        MaiaScanTiming.validateRetuneTimeout(twentyFps)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun scanConfigValidationRejectsImpossibleRetuneTimeout() {
+        ScannerWebCommandValidator.validateScanConfig(
+            """{"waterfallFrameRateFps":7,"discardedFramesAfterRetune":2,"loSettlingMs":5,"retuneTimeoutMs":250}""",
+        )
     }
 
     @Test

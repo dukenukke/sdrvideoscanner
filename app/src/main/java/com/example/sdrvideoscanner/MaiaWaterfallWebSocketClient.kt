@@ -33,6 +33,7 @@ class MaiaWaterfallWebSocketClient(
     private val connectTimeoutMs: Int = 3000,
     private val readTimeoutMs: Int = 3000,
     private val parser: WaterfallFrameParser = MaiaFloat32WaterfallFrameParser(),
+    private val onConnected: () -> Unit = {},
     private val onReconnect: () -> Unit = {},
     private val onDroppedFrame: () -> Unit = {},
 ) : WaterfallSource {
@@ -80,6 +81,7 @@ class MaiaWaterfallWebSocketClient(
             try {
                 openSocket()
                 Log.i(LOG_TAG, "Connected Maia waterfall WebSocket ws://${endpoint()}$path")
+                onConnected()
                 backoffMs = INITIAL_RECONNECT_MS
                 readFrames()
             } catch (cancelled: CancellationException) {

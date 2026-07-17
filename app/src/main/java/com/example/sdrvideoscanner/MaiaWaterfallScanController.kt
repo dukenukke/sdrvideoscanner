@@ -10,6 +10,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 class MaiaWaterfallScanController(
@@ -25,14 +27,25 @@ class MaiaWaterfallScanController(
     private val onScanWindowChanged: (window: ScanWindow, index: Int, total: Int) -> Unit = { _, _, _ -> },
     private val onMeasurement: (SpectrumMeasurement) -> Unit = {},
     private val onSpectrumFrame: (WaterfallFrame) -> Unit = {},
+    private val onRuntimeStatusChanged: (MaiaScannerRuntimeStatus) -> Unit = {},
+    private val onEvent: (type: String, message: String) -> Unit = { _, _ -> },
     private val clockNs: () -> Long = { System.nanoTime() },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleMutex = Mutex()
     private var job: Job? = null
     private var paused = false
     private var state = MaiaScannerState.STOPPED
     private var statistics = ScannerStatistics()
     private val confirmedSignals = linkedMapOf<Long, DetectedSignalRecord>()
+    private var runtimeStatus = MaiaScannerRuntimeStatus(
+        requestedWaterfallFrameRateFps = MaiaScanConfig().waterfallFrameRateFps,
+        actualWaterfallFrameRateFps = null,
+        spectrometerStatus = "idle",
+        websocketStatus = "disconnected",
+        effectiveRetuneTimeoutMs = MaiaScanConfig().retuneTimeoutMs,
+        staleFramesToDiscard = MaiaScanConfig().discardedFramesAfterRetune,
+    )
 
     fun start(config: MaiaScanConfig, ranges: List<ScanRange>) {
         stop()
@@ -65,62 +78,107 @@ class MaiaWaterfallScanController(
 
     private suspend fun runScanner(config: MaiaScanConfig, ranges: List<ScanRange>) {
         try {
-            setState(MaiaScannerState.CONNECTING)
-            source.connect()
-            setState(MaiaScannerState.CONFIGURING)
-            tuner.configure(config.sampleRateHz, config.rfBandwidthHz)
-            val windows = MaiaScanPlanner.generateWindows(ranges, config)
-            val detector = SpectralCandidateDetector(config)
-
-            while (currentCoroutineContext().isActive && windows.isNotEmpty()) {
-                val cycleStartNs = clockNs()
-                val passCandidates = mutableListOf<SpectralCandidate>()
-                setState(MaiaScannerState.FAST_SCAN)
-                for ((index, window) in windows.withIndex()) {
-                    waitIfPaused()
-                    onScanWindowChanged(window, index + 1, windows.size)
-                    val stepStartNs = clockNs()
-                    selectRfPathIfNeeded(window, config)
-                    val measurement = measureWindow(window, config, config.fastMeasurementMs)
-                    if (measurement == null) {
-                        statistics = statistics.copy(failedScanSteps = statistics.failedScanSteps + 1)
-                        onStatisticsChanged(statistics)
-                        continue
-                    }
-                    onMeasurement(measurement)
-                    setState(MaiaScannerState.ANALYZING)
-                    passCandidates += detector.detect(measurement, window)
-                    statistics = statistics.copy(
-                        completedScanSteps = statistics.completedScanSteps + 1,
-                        candidatesDetected = statistics.candidatesDetected + passCandidates.size,
-                        averageStepDurationMs = rollingAverage(
-                            statistics.averageStepDurationMs,
-                            statistics.completedScanSteps,
-                            (clockNs() - stepStartNs) / 1_000_000.0,
-                        ),
-                    )
-                    onStatisticsChanged(statistics)
-                }
-
-                val merged = CandidateMerger.merge(passCandidates, config.mergeFrequencyToleranceHz)
-                val confirmed = revisitCandidates(merged, config)
-                publishConfirmed(confirmed, config)
-                statistics = statistics.copy(
-                    completedScanCycles = statistics.completedScanCycles + 1,
-                    candidatesConfirmed = statistics.candidatesConfirmed + confirmed.size,
-                    lastCycleDurationMs = ((clockNs() - cycleStartNs) / 1_000_000L),
+            lifecycleMutex.withLock {
+                runtimeStatus = MaiaScannerRuntimeStatus(
+                    requestedWaterfallFrameRateFps = config.waterfallFrameRateFps,
+                    actualWaterfallFrameRateFps = null,
+                    spectrometerStatus = "pending",
+                    websocketStatus = "disconnected",
+                    effectiveRetuneTimeoutMs = config.retuneTimeoutMs,
+                    staleFramesToDiscard = config.discardedFramesAfterRetune,
                 )
-                onStatisticsChanged(statistics)
+                publishRuntimeStatus()
+                val windows = MaiaScanPlanner.generateWindows(ranges, config)
+                if (windows.isEmpty()) {
+                    throw IllegalStateException("No enabled Maia scan windows")
+                }
+                val firstWindow = windows.first()
+                onScanWindowChanged(firstWindow, 1, windows.size)
+                onEvent("system", "HTTP configuration started")
+                setState(MaiaScannerState.CONFIGURING_RADIO)
+                setState(MaiaScannerState.CONFIGURING_SPECTROMETER)
+                val configuration = tuner.configureForScan(config, firstWindow.centerFrequencyHz)
+                val actualFps = configuration.actualWaterfallFrameRateFps ?: config.waterfallFrameRateFps
+                MaiaScanTiming.validateRetuneTimeout(config, actualFps)
+                runtimeStatus = runtimeStatus.copy(
+                    actualWaterfallFrameRateFps = actualFps,
+                    spectrometerStatus = configuration.spectrometerStatus,
+                    effectiveRetuneTimeoutMs = config.retuneTimeoutMs,
+                    latestInitializationError = null,
+                )
+                publishRuntimeStatus()
+                onRadioMetadataChanged(firstWindow.centerFrequencyHz, config.sampleRateHz, config.rfBandwidthHz)
+                onEvent("success", "Spectrometer configuration accepted")
+                onEvent("system", "Waterfall FPS requested ${config.waterfallFrameRateFps}, actual $actualFps")
+                setState(MaiaScannerState.CONNECTING_WATERFALL)
+                runtimeStatus = runtimeStatus.copy(websocketStatus = "connecting")
+                publishRuntimeStatus()
+                source.connect()
+                scanLoop(config, windows)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            runtimeStatus = runtimeStatus.copy(
+                spectrometerStatus = if (runtimeStatus.spectrometerStatus == "pending") "failed" else runtimeStatus.spectrometerStatus,
+                websocketStatus = "disconnected",
+                latestInitializationError = error.message ?: error.javaClass.name,
+            )
+            publishRuntimeStatus()
+            onEvent("error", "Maia scanner initialization/configuration failed: ${error.message ?: error.javaClass.name}")
             setState(MaiaScannerState.ERROR)
         } finally {
             source.disconnect()
+            runtimeStatus = runtimeStatus.copy(websocketStatus = "disconnected")
+            publishRuntimeStatus()
             if (state != MaiaScannerState.ERROR) {
                 setState(MaiaScannerState.STOPPED)
             }
+        }
+    }
+
+    private suspend fun scanLoop(config: MaiaScanConfig, windows: List<ScanWindow>) {
+        val detector = SpectralCandidateDetector(config)
+        onEvent("success", "Scanning started or resumed")
+        while (currentCoroutineContext().isActive && windows.isNotEmpty()) {
+            val cycleStartNs = clockNs()
+            val passCandidates = mutableListOf<SpectralCandidate>()
+            setState(MaiaScannerState.FAST_SCAN)
+            for ((index, window) in windows.withIndex()) {
+                waitIfPaused()
+                onScanWindowChanged(window, index + 1, windows.size)
+                val stepStartNs = clockNs()
+                selectRfPathIfNeeded(window, config)
+                val measurement = measureWindow(window, config, config.fastMeasurementMs)
+                if (measurement == null) {
+                    statistics = statistics.copy(failedScanSteps = statistics.failedScanSteps + 1)
+                    onStatisticsChanged(statistics)
+                    continue
+                }
+                onMeasurement(measurement)
+                setState(MaiaScannerState.ANALYZING)
+                passCandidates += detector.detect(measurement, window)
+                statistics = statistics.copy(
+                    completedScanSteps = statistics.completedScanSteps + 1,
+                    candidatesDetected = statistics.candidatesDetected + passCandidates.size,
+                    averageStepDurationMs = rollingAverage(
+                        statistics.averageStepDurationMs,
+                        statistics.completedScanSteps,
+                        (clockNs() - stepStartNs) / 1_000_000.0,
+                    ),
+                )
+                onStatisticsChanged(statistics)
+            }
+
+            val merged = CandidateMerger.merge(passCandidates, config.mergeFrequencyToleranceHz)
+            val confirmed = revisitCandidates(merged, config)
+            publishConfirmed(confirmed, config)
+            statistics = statistics.copy(
+                completedScanCycles = statistics.completedScanCycles + 1,
+                candidatesConfirmed = statistics.candidatesConfirmed + confirmed.size,
+                lastCycleDurationMs = ((clockNs() - cycleStartNs) / 1_000_000L),
+            )
+            onStatisticsChanged(statistics)
         }
     }
 
@@ -181,6 +239,7 @@ class MaiaWaterfallScanController(
     ): WaterfallFrame? {
         val deadlineNs = clockNs() + config.retuneTimeoutMs * 1_000_000L
         var discarded = 0
+        setState(MaiaScannerState.DISCARDING_STALE_FRAMES)
         while (clockNs() < deadlineNs && currentCoroutineContext().isActive) {
             val remainingMs = ((deadlineNs - clockNs()) / 1_000_000L).coerceAtLeast(1L)
             val frame = withTimeoutOrNull(remainingMs) { source.frames().first() } ?: return null
@@ -194,6 +253,7 @@ class MaiaWaterfallScanController(
                 statistics = statistics.copy(discardedRetuneFrames = statistics.discardedRetuneFrames + 1)
                 continue
             }
+            onEvent("success", "Stale-frame guard completed")
             onSpectrumFrame(frame)
             return frame
         }
@@ -317,6 +377,10 @@ class MaiaWaterfallScanController(
     private fun setState(next: MaiaScannerState) {
         state = next
         onStateChanged(next)
+    }
+
+    private fun publishRuntimeStatus() {
+        onRuntimeStatusChanged(runtimeStatus)
     }
 
     private fun rollingAverage(previousAverage: Double, previousCount: Long, next: Double): Double {

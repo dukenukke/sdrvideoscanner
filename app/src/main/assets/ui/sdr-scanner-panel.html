@@ -652,7 +652,7 @@
       position: absolute;
       right: 10px;
       bottom: 7px;
-      left: 10px;
+      left: 58px;
       display: flex;
       justify-content: space-between;
       color: var(--muted-2);
@@ -997,20 +997,50 @@
       margin-top: 10px;
     }
 
-    body[data-dashboard-view="user"] table {
-      min-width: 760px;
+    body[data-dashboard-view="user"] .table-scroll {
+      width: 100%;
+      overflow-x: hidden;
     }
 
-    body[data-dashboard-view="user"] th:nth-child(4),
-    body[data-dashboard-view="user"] td:nth-child(4),
-    body[data-dashboard-view="user"] th:nth-child(8),
-    body[data-dashboard-view="user"] td:nth-child(8),
-    body[data-dashboard-view="user"] th:nth-child(9),
-    body[data-dashboard-view="user"] td:nth-child(9),
-    body[data-dashboard-view="user"] th:nth-child(10),
-    body[data-dashboard-view="user"] td:nth-child(10) {
-      display: none;
+    body[data-dashboard-view="user"] table {
+      width: 100%;
+      min-width: 0;
+      table-layout: fixed;
     }
+
+    body[data-dashboard-view="user"] th,
+    body[data-dashboard-view="user"] td {
+      min-width: 0;
+      padding: 9px 7px;
+    }
+
+    body[data-dashboard-view="user"] .freq-cell,
+    body[data-dashboard-view="user"] .signal-value,
+    body[data-dashboard-view="user"] .type-badge,
+    body[data-dashboard-view="user"] .direction-badge,
+    body[data-dashboard-view="user"] .subtext {
+      max-width: 100%;
+    }
+
+    body[data-dashboard-view="user"] .type-badge {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    body[data-dashboard-view="user"] .user-channel-value {
+      display: inline-block;
+      overflow: hidden;
+      max-width: 100%;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 720;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    body[data-dashboard-view="user"] .user-channel-value.aligned { color: var(--green); }
+    body[data-dashboard-view="user"] .user-channel-value.unaligned { color: var(--blue); }
 
     .toast {
       position: fixed;
@@ -1064,6 +1094,7 @@
       .spectrum-wrap.video-mode { height: min(68vw, 340px); }
       body[data-dashboard-view="user"] .spectrum-wrap,
       body[data-dashboard-view="user"] .spectrum-wrap.video-mode { height: min(74vh, 96vw); }
+      .spectrum-labels { left: 48px; }
       .view-switch { align-items: flex-start; flex-direction: column; }
       .view-toggle-group { width: 100%; }
       .view-toggle { flex: 1; }
@@ -1118,6 +1149,21 @@
         </section>
 
         <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Spectrum display</h2><button class="btn btn-ghost btn-small" type="button" id="resetSpectrumDisplay">Reset</button></div>
+          <div class="field-grid">
+            <div class="field-row">
+              <div class="field"><label for="spectrumScaleMode">Scale mode</label><select id="spectrumScaleMode"><option value="fixed" selected>Fixed</option><option value="auto">Auto</option></select></div>
+              <div class="field"><label for="spectrumSmoothing">Smoothing</label><select id="spectrumSmoothing"><option value="off" selected>Off</option><option value="low">Low</option><option value="medium">Medium</option></select></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="spectrumYMin">Y minimum, dB</label><input id="spectrumYMin" type="number" step="1" value="0"></div>
+              <div class="field"><label for="spectrumYMax">Y maximum, dB</label><input id="spectrumYMax" type="number" step="1" value="90"></div>
+            </div>
+            <div class="status-cluster"><span class="mini-pill" id="spectrumScaleSummary">Power, dB · fixed 0…90</span></div>
+          </div>
+        </section>
+
+        <section class="panel-section">
           <div class="section-heading"><h2 class="section-title">Scan ranges</h2><span class="section-kicker">UNIFORM SWEEP</span></div>
           <div class="band-list" id="bandList">
             <button class="band-button" type="button" data-band="1.2" data-start="1200" data-end="1400"><span class="band-indicator"></span><span><span class="band-name">1.2—1.4 GHz</span><span class="band-range">RF1 · priority 3 · enabled</span></span><span class="band-count" data-count="1.2">2</span></button>
@@ -1146,6 +1192,7 @@
               <div class="field"><label for="frequencyStep">Frequency step</label><select id="frequencyStep"><option selected>15 MHz</option><option>12 MHz</option><option>10 MHz</option></select></div>
               <div class="field"><label for="usableSpan">Usable FFT span</label><select id="usableSpan"><option selected>15 MHz</option><option>14 MHz</option><option>12 MHz</option></select></div>
             </div>
+            <div class="field"><label for="waterfallFrameRate">Waterfall frame rate, fps</label><input id="waterfallFrameRate" type="number" min="1" max="120" step="0.1" list="waterfallFrameRateOptions" value="10"><datalist id="waterfallFrameRateOptions"><option value="5"></option><option value="7"></option><option value="10"></option><option value="15"></option><option value="20"></option></datalist></div>
             <div class="field-row">
               <div class="field"><label for="loSettling">LO settling, ms</label><input id="loSettling" type="number" min="1" max="50" value="5"></div>
               <div class="field"><label for="discardFrames">Discard FFT frames</label><input id="discardFrames" type="number" min="0" max="10" value="2"></div>
@@ -1154,7 +1201,7 @@
               <div class="field"><label for="fastMeasurement">Fast measurement, ms</label><input id="fastMeasurement" type="number" min="5" max="100" value="10"></div>
               <div class="field"><label for="dwellTime">Target dwell, ms</label><input id="dwellTime" type="number" min="15" max="100" value="18"></div>
             </div>
-            <div class="field"><label for="retuneTimeout">Retune timeout, ms</label><input id="retuneTimeout" type="number" min="50" max="1000" step="10" value="250"></div>
+            <div class="field"><label for="retuneTimeout">Retune timeout, ms</label><input id="retuneTimeout" type="number" min="50" max="1000" step="10" value="500"></div>
           </div>
         </section>
 
@@ -1227,10 +1274,12 @@
           <div class="progress-track" id="progressTrack" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
 
           <div class="stats-grid" role="group" aria-label="Поточні показники">
-            <div class="stat"><span class="stat-label">Noise floor</span><span class="stat-value" id="noiseFloor">−91.4 dBFS</span></div>
+            <div class="stat"><span class="stat-label">Noise floor</span><span class="stat-value" id="noiseFloor">6.0 dB</span></div>
             <div class="stat"><span class="stat-label">FFT frames</span><span class="stat-value" id="fftFrames">6 valid</span></div>
             <div class="stat"><span class="stat-label">Retune latency</span><span class="stat-value" id="retuneLatency">8.4 ms</span></div>
             <div class="stat"><span class="stat-label">Candidates</span><span class="stat-value good" id="foundCount">7 confirmed</span></div>
+            <div class="stat"><span class="stat-label">Waterfall FPS</span><span class="stat-value" id="waterfallFpsStatus">req 10.0 / actual --</span></div>
+            <div class="stat"><span class="stat-label">Spectrometer</span><span class="stat-value" id="spectrometerStatus">idle / ws disconnected</span></div>
           </div>
           <div class="candidate-queue"><span class="candidate-queue-copy"><strong id="candidateQueueTitle">Revisit queue: 3</strong> · next 5 885.4 MHz · 75 ms</span><span class="candidate-vote" id="candidateVote">vote 1 / 3</span></div>
         </article>
@@ -1252,8 +1301,9 @@
             </div>
           </div>
           <div class="table-scroll">
-            <table>
-              <thead><tr><th>Частота</th><th>FPV match</th><th>Тип</th><th>Peak / NF</th><th>SNR</th><th>BW</th><th>Напрямок</th><th>Confidence</th><th>First / last</th><th>Count</th><th aria-label="Дії"></th></tr></thead>
+            <table id="signalsTable">
+              <colgroup id="signalsCols"></colgroup>
+              <thead id="signalsHead"></thead>
               <tbody id="signalsBody"></tbody>
             </table>
             <div class="empty-state" id="emptyState">Немає сигналів за вибраним фільтром.</div>
@@ -1308,13 +1358,13 @@
     const demoMode = new URLSearchParams(window.location.search).get("demo") === "1";
 
     let signals = demoMode ? [
-      { id: 1, freq: 5805.4, nominal: 5806.0, channel: "5.8 / R5", offset: -0.6, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "PAL · stable · 3/3 revisits", rssi: -42.7, noiseFloor: -91.4, snr: 18.6, bandwidth: 6.3, direction: "approaching", trend: 2.4, confidence: 96, status: "CONFIRMED", firstSeen: "10:07:18", lastSeen: "10:14:32", seen: 4 },
-      { id: 2, freq: 5881.1, nominal: 5880.0, channel: "5.8 / R7", offset: 1.1, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "NTSC/PAL525 · 2/3 revisits", rssi: -57.2, noiseFloor: -90.8, snr: 12.1, bandwidth: 6.8, direction: "static", trend: 0.2, confidence: 89, status: "CONFIRMED", firstSeen: "10:08:04", lastSeen: "10:13:58", seen: 3 },
+      { id: 1, freq: 5805.4, nominal: 5806.0, channel: "5.8 / R5", channelName: "R5", offset: -0.6, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "PAL · stable · 3/3 revisits", rssi: -42.7, noiseFloor: -91.4, snr: 18.6, bandwidth: 6.3, direction: "approaching", trend: 2.4, confidence: 96, status: "CONFIRMED", firstSeen: "10:07:18", lastSeen: "10:14:32", seen: 4 },
+      { id: 2, freq: 5881.1, nominal: 5880.0, channel: "5.8 / R7", channelName: "R7", offset: 1.1, band: "5.x", range: "4.9—6.0", type: "analog", label: "Analog FPV", detail: "NTSC/PAL525 · 2/3 revisits", rssi: -57.2, noiseFloor: -90.8, snr: 12.1, bandwidth: 6.8, direction: "static", trend: 0.2, confidence: 89, status: "CONFIRMED", firstSeen: "10:08:04", lastSeen: "10:13:58", seen: 3 },
       { id: 3, freq: 5665.8, nominal: null, channel: "UNALIGNED", offset: null, band: "5.x", range: "4.9—6.0", type: "digital", label: "Wideband unknown", detail: "OFDM-like · unaligned candidate", rssi: -66.8, noiseFloor: -89.9, snr: 9.4, bandwidth: 19.6, direction: "receding", trend: -1.7, confidence: 78, status: "UNALIGNED", firstSeen: "10:09:33", lastSeen: "10:12:41", seen: 2 },
-      { id: 4, freq: 3319.2, nominal: 3320.0, channel: "3.3 / E2", offset: -0.8, band: "3.3", range: "3.2—3.5", type: "unknown", label: "Interference", detail: "Wideband transient · revisit pending", rssi: -71.5, noiseFloor: -91.2, snr: 7.2, bandwidth: 4.1, direction: "approaching", trend: 1.1, confidence: 61, status: "REVISIT 1/3", firstSeen: "10:11:19", lastSeen: "10:11:19", seen: 1 },
+      { id: 4, freq: 3319.2, nominal: 3320.0, channel: "3.3 / E2", channelName: "E2", offset: -0.8, band: "3.3", range: "3.2—3.5", type: "unknown", label: "Interference", detail: "Wideband transient · revisit pending", rssi: -71.5, noiseFloor: -91.2, snr: 7.2, bandwidth: 4.1, direction: "approaching", trend: 1.1, confidence: 61, status: "REVISIT 1/3", firstSeen: "10:11:19", lastSeen: "10:11:19", seen: 1 },
       { id: 5, freq: 2447.3, nominal: null, channel: "UNALIGNED", offset: null, band: "2.4", range: "2.3—2.5", type: "digital", label: "Narrowband", detail: "Packet signal · bandwidth mismatch", rssi: -63.1, noiseFloor: -92.0, snr: 10.8, bandwidth: 1.2, direction: "static", trend: -0.1, confidence: 82, status: "CONFIRMED", firstSeen: "10:05:12", lastSeen: "10:09:44", seen: 5 },
-      { id: 6, freq: 1281.4, nominal: 1280.0, channel: "1.2 / CH8", offset: 1.4, band: "1.2", range: "1.2—1.4", type: "analog", label: "Analog FPV", detail: "PAL · low stability · 2/3 revisits", rssi: -68.9, noiseFloor: -92.6, snr: 8.7, bandwidth: 5.9, direction: "receding", trend: -2.0, confidence: 74, status: "CONFIRMED", firstSeen: "10:06:45", lastSeen: "10:08:16", seen: 2 },
-      { id: 7, freq: 1201.8, nominal: 1200.0, channel: "1.2 / CH1", offset: 1.8, band: "1.2", range: "1.2—1.4", type: "unknown", label: "Unknown", detail: "Narrow FM-like candidate", rssi: -75.4, noiseFloor: -92.1, snr: 5.9, bandwidth: 0.8, direction: "static", trend: 0.1, confidence: 53, status: "REVISIT 2/3", firstSeen: "10:07:50", lastSeen: "10:07:50", seen: 1 }
+      { id: 6, freq: 1281.4, nominal: 1280.0, channel: "1.2 / CH8", channelName: "CH8", offset: 1.4, band: "1.2", range: "1.2—1.4", type: "analog", label: "Analog FPV", detail: "PAL · low stability · 2/3 revisits", rssi: -68.9, noiseFloor: -92.6, snr: 8.7, bandwidth: 5.9, direction: "receding", trend: -2.0, confidence: 74, status: "CONFIRMED", firstSeen: "10:06:45", lastSeen: "10:08:16", seen: 2 },
+      { id: 7, freq: 1201.8, nominal: 1200.0, channel: "1.2 / CH1", channelName: "CH1", offset: 1.8, band: "1.2", range: "1.2—1.4", type: "unknown", label: "Unknown", detail: "Narrow FM-like candidate", rssi: -75.4, noiseFloor: -92.1, snr: 5.9, bandwidth: 0.8, direction: "static", trend: 0.1, confidence: 53, status: "REVISIT 2/3", firstSeen: "10:07:50", lastSeen: "10:07:50", seen: 1 }
     ] : [];
 
     const initialLogs = demoMode ? [
@@ -1339,6 +1389,12 @@
       { name: "COLLECTING", detail: "6 FFT frames · discard 2 complete" },
       { name: "ANALYZING", detail: "median noise · edges and DC excluded" }
     ];
+    const SPECTRUM_DISPLAY_STORAGE_KEY = "scannerSpectrumDisplay";
+    const SCAN_SETTINGS_STORAGE_KEY = "scannerScanSettings";
+    const SPECTRUM_DEFAULT_DISPLAY = { scaleMode: "fixed", yMinDb: 0, yMaxDb: 90, smoothing: "off" };
+    const SPECTRUM_MIN_RANGE_DB = 20;
+    const SPECTRUM_UNIT_LABEL = "Power, dB";
+    const RETUNE_TIMEOUT_SAFETY_MARGIN_MS = 75;
 
     const state = {
       scanning: demoMode,
@@ -1362,10 +1418,21 @@
       logCount: initialLogs.length,
       sessionStarted: Date.now() - 522000,
       dashboardView: "user",
-      usableSpanMhz: 15.0
+      usableSpanMhz: 15.0,
+      spectrumDisplay: { ...SPECTRUM_DEFAULT_DISPLAY },
+      spectrumAutoScale: null,
+      latestSpectrumFrame: null,
+      latestNoiseFloorDb: demoMode ? 6.0 : null,
+      latestInitializationError: null,
+      spectrumDiagnosticsLogged: 0,
+      lastSpectrumDiagnosticLogMs: 0
     };
 
     const el = id => document.getElementById(id);
+
+    const ENGINEERING_SIGNAL_HEADER = `<tr><th>Частота</th><th>FPV match</th><th>Тип</th><th>Peak / NF</th><th>SNR</th><th>BW</th><th>Напрямок</th><th>Confidence</th><th>First / last</th><th>Count</th><th aria-label="Дії"></th></tr>`;
+    const USER_SIGNAL_HEADER = `<tr><th>Channel / Frequency</th><th>Type / SNR</th><th>Direction</th></tr>`;
+    const USER_SIGNAL_COLS = `<col style="width:26%"><col style="width:34%"><col style="width:40%">`;
     const formatFrequency = value => value.toLocaleString("uk-UA", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).replace(/,/g, ",");
     const nowTime = () => new Date().toLocaleTimeString("uk-UA", { hour12: false });
 
@@ -1385,6 +1452,97 @@
       }
     }
 
+    function sanitizeSpectrumDisplaySettings(candidate, fallback = SPECTRUM_DEFAULT_DISPLAY) {
+      const scaleMode = candidate?.scaleMode === "auto" ? "auto" : "fixed";
+      const smoothing = ["off", "low", "medium"].includes(candidate?.smoothing) ? candidate.smoothing : fallback.smoothing;
+      const yMinDb = Number(candidate?.yMinDb);
+      const yMaxDb = Number(candidate?.yMaxDb);
+      if (!Number.isFinite(yMinDb) || !Number.isFinite(yMaxDb)) return null;
+      if (yMaxDb <= yMinDb || yMaxDb - yMinDb < SPECTRUM_MIN_RANGE_DB) return null;
+      return { scaleMode, yMinDb, yMaxDb, smoothing };
+    }
+
+    function storedSpectrumDisplaySettings() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(SPECTRUM_DISPLAY_STORAGE_KEY) || "null");
+        return sanitizeSpectrumDisplaySettings(parsed) || { ...SPECTRUM_DEFAULT_DISPLAY };
+      } catch (_) {
+        return { ...SPECTRUM_DEFAULT_DISPLAY };
+      }
+    }
+
+    function persistSpectrumDisplaySettings() {
+      try { localStorage.setItem(SPECTRUM_DISPLAY_STORAGE_KEY, JSON.stringify(state.spectrumDisplay)); } catch (_) {}
+    }
+
+    function updateSpectrumDisplayControls() {
+      el("spectrumScaleMode").value = state.spectrumDisplay.scaleMode;
+      el("spectrumSmoothing").value = state.spectrumDisplay.smoothing;
+      el("spectrumYMin").value = state.spectrumDisplay.yMinDb;
+      el("spectrumYMax").value = state.spectrumDisplay.yMaxDb;
+      const mode = state.spectrumDisplay.scaleMode === "auto" ? "auto" : "fixed";
+      el("spectrumScaleSummary").textContent = `${SPECTRUM_UNIT_LABEL} · ${mode} ${state.spectrumDisplay.yMinDb}…${state.spectrumDisplay.yMaxDb}`;
+    }
+
+    function applySpectrumDisplaySettings(candidate, persist = true) {
+      const next = sanitizeSpectrumDisplaySettings(candidate, state.spectrumDisplay);
+      if (!next) {
+        updateSpectrumDisplayControls();
+        toast("Invalid spectrum display scale");
+        return false;
+      }
+      state.spectrumDisplay = next;
+      if (next.scaleMode === "fixed") state.spectrumAutoScale = null;
+      updateSpectrumDisplayControls();
+      if (persist) persistSpectrumDisplaySettings();
+      redrawCurrentSpectrum();
+      return true;
+    }
+
+    function spectrumDisplaySettings() {
+      return { ...state.spectrumDisplay };
+    }
+
+    const SCAN_SETTING_IDS = ["sampleRate", "rfBandwidth", "frequencyStep", "usableSpan", "waterfallFrameRate", "loSettling", "discardFrames", "fastMeasurement", "dwellTime", "retuneTimeout", "candidateMeasurement", "revisitCount", "positiveRevisits", "fpvTolerance", "threshold"];
+
+    function loadScanSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SCAN_SETTINGS_STORAGE_KEY) || "{}");
+        SCAN_SETTING_IDS.forEach(id => {
+          if (saved[id] != null && el(id)) el(id).value = saved[id];
+        });
+      } catch (_) {}
+    }
+
+    function persistScanSettings() {
+      try {
+        const values = {};
+        SCAN_SETTING_IDS.forEach(id => { if (el(id)) values[id] = el(id).value; });
+        localStorage.setItem(SCAN_SETTINGS_STORAGE_KEY, JSON.stringify(values));
+      } catch (_) {}
+    }
+
+    function minimumRetuneTimeoutMsForInputs() {
+      const numberValue = id => Number(String(el(id).value).replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "0");
+      const fps = numberValue("waterfallFrameRate");
+      if (!Number.isFinite(fps) || fps <= 0) return Number.POSITIVE_INFINITY;
+      const discarded = Math.max(0, Math.round(numberValue("discardFrames")));
+      const loSettling = Math.max(0, Math.round(numberValue("loSettling")));
+      return loSettling + RETUNE_TIMEOUT_SAFETY_MARGIN_MS + Math.ceil((discarded + 1) * 1000 / fps);
+    }
+
+    function validateRetuneTimeoutInputs(showMessage = true) {
+      const requested = Math.round(Number(String(el("retuneTimeout").value).replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "0"));
+      const minimum = minimumRetuneTimeoutMsForInputs();
+      if (Number.isFinite(minimum) && requested >= minimum) return true;
+      if (showMessage) {
+        const message = `Retune timeout must be at least ${minimum} ms for ${el("waterfallFrameRate").value} fps, ${el("discardFrames").value} discarded frames, one valid frame, LO settling, and ${RETUNE_TIMEOUT_SAFETY_MARGIN_MS} ms safety margin.`;
+        appendLog("warning", message);
+        toast(`Retune timeout too low: min ${minimum} ms`);
+      }
+      return false;
+    }
+
     function setDashboardView(view, persist = true) {
       const nextView = view === "engineering" ? "engineering" : "user";
       state.dashboardView = nextView;
@@ -1398,6 +1556,7 @@
       if (persist) {
         try { localStorage.setItem("scannerDashboardView", nextView); } catch (_) {}
       }
+      renderSignals();
       requestAnimationFrame(() => {
         drawSpectrum(state.currentLO);
         reportNativeVideoRect(state.viewMode === "video");
@@ -1442,6 +1601,80 @@
       return Math.max(8, Math.min(100, (rssi + 95) * 1.82));
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+    }
+
+    function fpvToleranceMhz() {
+      const input = el("fpvTolerance");
+      const value = Number(String(input?.value ?? "2").replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "2");
+      return Number.isFinite(value) && value > 0 ? value : 2;
+    }
+
+    function isAlignedSignal(signal) {
+      const nominal = Number(signal.nominal);
+      if (!Number.isFinite(nominal) || nominal <= 0) return false;
+      const offset = Number(signal.offset);
+      return !Number.isFinite(offset) || Math.abs(offset) <= fpvToleranceMhz();
+    }
+
+    function shortChannelIdentifier(signal) {
+      const structuredName = String(signal.channelName ?? "").trim();
+      if (structuredName) return structuredName;
+      const formatted = String(signal.channel ?? "").trim();
+      if (!formatted || formatted.toUpperCase() === "UNALIGNED") return "";
+      const parts = formatted.split("/");
+      return String(parts[parts.length - 1] || formatted).trim();
+    }
+
+    function directionCellMarkup(signal) {
+      const direction = directionMeta(signal.direction);
+      const trend = `${signal.trend > 0 ? "+" : ""}${signal.trend.toFixed(1)} dB/s`;
+      return `<td class="direction-cell"><span class="direction-badge ${signal.direction}"><span class="direction-arrow">${direction.arrow}</span>${direction.label}</span><span class="subtext">${trend}</span></td>`;
+    }
+
+    function typeBadgeMarkup(signal) {
+      return `<span class="type-badge ${signalClass(signal.type)}">${escapeHtml(signal.label)}</span>`;
+    }
+
+    function renderUserChannelCell(signal) {
+      if (isAlignedSignal(signal)) {
+        const channel = shortChannelIdentifier(signal) || formatFrequency(signal.nominal);
+        return `<td aria-label="Aligned FPV channel ${escapeHtml(channel)}"><span class="user-channel-value aligned">${escapeHtml(channel)}</span></td>`;
+      }
+      const frequency = `${formatFrequency(signal.freq)} MHz`;
+      return `<td aria-label="Unaligned measured frequency ${escapeHtml(frequency)}"><span class="user-channel-value unaligned">${escapeHtml(frequency)}</span></td>`;
+    }
+
+    function renderUserSignalRow(signal) {
+      return `
+        <tr data-id="${signal.id}" class="${signal.id === state.selectedSignal ? "selected" : ""}" tabindex="0">
+          ${renderUserChannelCell(signal)}
+          <td>${typeBadgeMarkup(signal)}<span class="subtext">SNR ${signal.snr.toFixed(1)} dB</span></td>
+          ${directionCellMarkup(signal)}
+        </tr>`;
+    }
+
+    function renderEngineeringSignalRow(signal) {
+      const primaryFrequency = signal.nominal ?? signal.freq;
+      const frequencyMeta = signal.nominal ? `measured ${formatFrequency(signal.freq)} MHz` : `raw - ${signal.range} GHz`;
+      const offset = signal.offset === null ? "outside +/-2 MHz" : `delta ${signal.offset > 0 ? "+" : ""}${signal.offset.toFixed(1)} MHz`;
+      return `
+        <tr data-id="${signal.id}" class="${signal.id === state.selectedSignal ? "selected" : ""}" tabindex="0">
+          <td><span class="freq-cell">${formatFrequency(primaryFrequency)} MHz</span><span class="subtext">${escapeHtml(frequencyMeta)}</span></td>
+          <td><span class="signal-value">${escapeHtml(signal.channel)}</span><span class="subtext">${escapeHtml(offset)}</span></td>
+          <td>${typeBadgeMarkup(signal)}</td>
+          <td><div class="signal-meter"><span class="signal-value">${signal.rssi.toFixed(1)}</span><span class="meter-track"><span class="meter-fill" style="display:block;width:${meterWidth(signal.rssi)}%"></span></span></div><span class="subtext">NF ${signal.noiseFloor.toFixed(1)} dB</span></td>
+          <td><span class="signal-value">${signal.snr.toFixed(1)} dB</span></td>
+          <td><span class="signal-value">${signal.bandwidth.toFixed(1)} MHz</span></td>
+          ${directionCellMarkup(signal)}
+          <td><span class="confidence-badge">${signal.confidence}%</span><span class="subtext">${escapeHtml(signal.status)}</span></td>
+          <td><span class="signal-value">${escapeHtml(signal.firstSeen)}</span><span class="subtext">last ${escapeHtml(signal.lastSeen)}</span></td>
+          <td><span class="signal-value">${signal.seen}&times;</span></td>
+          <td><div class="row-actions"><button class="btn btn-ghost btn-small dismiss-action" type="button" data-id="${signal.id}" aria-label="Dismiss ${signal.freq} MHz">&times;</button></div></td>
+        </tr>`;
+    }
+
     function renderSignals() {
       const visible = signals.filter(signal => {
         if (signal.dismissed) return false;
@@ -1450,28 +1683,10 @@
         return true;
       });
 
-      el("signalsBody").innerHTML = visible.map(signal => {
-        const direction = directionMeta(signal.direction);
-        const trend = `${signal.trend > 0 ? "+" : ""}${signal.trend.toFixed(1)} dB/s`;
-        const primaryFrequency = signal.nominal ?? signal.freq;
-        const frequencyMeta = signal.nominal ? `measured ${formatFrequency(signal.freq)} MHz` : `raw · ${signal.range} GHz`;
-        const offset = signal.offset === null ? "outside ±2 MHz" : `Δ ${signal.offset > 0 ? "+" : ""}${signal.offset.toFixed(1)} MHz`;
-        return `
-        <tr data-id="${signal.id}" class="${signal.id === state.selectedSignal ? "selected" : ""}" tabindex="0">
-          <td><span class="freq-cell">${formatFrequency(primaryFrequency)} MHz</span><span class="subtext">${frequencyMeta}</span></td>
-          <td><span class="signal-value">${signal.channel}</span><span class="subtext">${offset}</span></td>
-          <td><span class="type-badge ${signalClass(signal.type)}">${signal.label}</span></td>
-          <td><div class="signal-meter"><span class="signal-value">${signal.rssi.toFixed(1)}</span><span class="meter-track"><span class="meter-fill" style="display:block;width:${meterWidth(signal.rssi)}%"></span></span></div><span class="subtext">NF ${signal.noiseFloor.toFixed(1)} dBFS</span></td>
-          <td><span class="signal-value">${signal.snr.toFixed(1)} dB</span></td>
-          <td><span class="signal-value">${signal.bandwidth.toFixed(1)} MHz</span></td>
-          <td class="direction-cell"><span class="direction-badge ${signal.direction}"><span class="direction-arrow">${direction.arrow}</span>${direction.label}</span><span class="subtext">${trend}</span></td>
-          <td><span class="confidence-badge">${signal.confidence}%</span><span class="subtext">${signal.status}</span></td>
-          <td><span class="signal-value">${signal.firstSeen}</span><span class="subtext">last ${signal.lastSeen}</span></td>
-          <td><span class="signal-value">${signal.seen}×</span></td>
-          <td><div class="row-actions"><button class="btn btn-ghost btn-small tune-action" type="button" data-id="${signal.id}" aria-label="Налаштуватися на ${signal.freq} MHz">Tune</button><button class="btn btn-ghost btn-small dismiss-action" type="button" data-id="${signal.id}" aria-label="Приховати ${signal.freq} MHz">×</button></div></td>
-        </tr>`;
-      }).join("");
-
+      const userView = state.dashboardView === "user";
+      el("signalsCols").innerHTML = userView ? USER_SIGNAL_COLS : "";
+      el("signalsHead").innerHTML = userView ? USER_SIGNAL_HEADER : ENGINEERING_SIGNAL_HEADER;
+      el("signalsBody").innerHTML = visible.map(userView ? renderUserSignalRow : renderEngineeringSignalRow).join("");
       el("emptyState").style.display = visible.length ? "none" : "block";
       updateCounts();
     }
@@ -1484,17 +1699,6 @@
 
         if (event.target.closest(".dismiss-action")) {
           dismissSignal(id);
-          return;
-        }
-
-        if (event.target.closest(".tune-action")) {
-          if (!demoMode) {
-            selectSignal(id);
-            const signal = signals.find(item => item.id === id);
-            if (signal?.type === "analog") callAndroid("lockSignal", id); else callAndroid("selectSignal", id);
-            return;
-          }
-          tuneSignal(id);
           return;
         }
 
@@ -1612,21 +1816,6 @@
       if (signal.type !== "analog" && state.viewMode === "video") setViewMode("spectrum");
       renderSignals();
       drawFocus(signal);
-    }
-
-    function tuneSignal(id) {
-      const signal = signals.find(item => item.id === id);
-      if (!signal) return;
-      selectSignal(id);
-      setActiveBand(signal.band, false);
-      state.channel = Math.max(1, Math.min(bands[signal.band].channels, Math.round((signal.freq - bands[signal.band].start - 7.5) / 15) + 1));
-      state.currentLO = signal.freq;
-      el("currentFrequency").textContent = formatFrequency(signal.freq);
-      el("channelIndex").textContent = `${state.channel} / ${bands[signal.band].channels}`;
-      updateSpectrumLabels(state.currentLO);
-      appendLog("success", `Ручне налаштування на <strong>${formatFrequency(signal.freq)} MHz</strong>`);
-      toast(`Приймач налаштовано на ${formatFrequency(signal.freq)} MHz`);
-      setViewMode(signal.type === "analog" ? "video" : "spectrum", signal.type === "analog");
     }
 
     function dismissSignal(id) {
@@ -1780,7 +1969,8 @@
       }
 
       if (phase.name === "ANALYZING") {
-        el("noiseFloor").textContent = `−${(89.4 + Math.random() * 3.6).toFixed(1)} dBFS`;
+        state.latestNoiseFloorDb = 5.0 + Math.random() * 3.0;
+        el("noiseFloor").textContent = `${state.latestNoiseFloorDb.toFixed(1)} dB`;
         if (state.completedSteps > 0 && state.completedSteps % 9 === 0 && state.lastRevisitStep !== state.completedSteps) {
           state.lastRevisitStep = state.completedSteps;
           phase = { name: "CANDIDATE_REVISIT", detail: "75 ms · merged by frequency · vote 2/3" };
@@ -1803,46 +1993,293 @@
       return { ctx, width: rect.width, height: rect.height };
     }
 
-    function drawSpectrum(current = state.currentLO) {
-      const canvas = el("spectrumCanvas");
-      const { ctx, width, height } = setupCanvas(canvas);
-      if (!width || !height) return;
-      ctx.clearRect(0, 0, width, height);
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, "rgba(86,229,209,.32)");
-      gradient.addColorStop(1, "rgba(86,229,209,0)");
-      const sampleSpan = state.usableSpanMhz;
-      const windowStart = current - sampleSpan / 2;
-      const peaks = signals
-        .filter(signal => signal.band === state.activeBand && !signal.dismissed && Math.abs(signal.freq - current) <= sampleSpan / 2)
-        .map(signal => ({ x: (signal.freq - windowStart) / sampleSpan, power: meterWidth(signal.rssi) / 100 }));
-      const points = [];
-      for (let x = 0; x <= width; x += 3) {
-        const nx = x / width;
-        let amp = .08 + Math.random() * .075 + Math.sin(nx * 35) * .018;
-        peaks.forEach(peak => {
-          const distance = Math.abs(nx - peak.x);
-          amp += Math.exp(-(distance * distance) / .00042) * (.34 + peak.power * .43);
-        });
-        points.push([x, height - 18 - Math.min(.94, amp) * (height - 36)]);
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function spectrumPlotGeometry(width, height) {
+      const left = width < 390 ? 44 : 56;
+      const right = Math.max(left + 1, width - 8);
+      const top = 18;
+      const bottom = Math.max(top + 1, height - 24);
+      return { left, right, top, bottom, width: right - left, height: bottom - top };
+    }
+
+    function powerDbToCanvasY(valueDb, scale, geometry) {
+      const span = Math.max(1, scale.maxDb - scale.minDb);
+      const normalized = (Number(valueDb) - scale.minDb) / span;
+      return geometry.bottom - clamp(normalized, 0, 1) * geometry.height;
+    }
+
+    function majorGridStepDb(scale) {
+      const range = Math.abs(scale.maxDb - scale.minDb);
+      return range <= 40 ? 5 : 10;
+    }
+
+    function finiteSpectrumValues(values) {
+      return Array.from(values || [], value => Number(value)).filter(Number.isFinite);
+    }
+
+    function percentile(sortedValues, percentileValue) {
+      if (!sortedValues.length) return 0;
+      const index = clamp((sortedValues.length - 1) * percentileValue, 0, sortedValues.length - 1);
+      const lower = Math.floor(index);
+      const upper = Math.ceil(index);
+      if (lower === upper) return sortedValues[lower];
+      const t = index - lower;
+      return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * t;
+    }
+
+    function spectrumFrameStats(values, scale) {
+      const finite = finiteSpectrumValues(values).sort((a, b) => a - b);
+      if (!finite.length) {
+        return { min: null, median: null, max: null, clippedBelow: 0, clippedAbove: 0, total: 0 };
       }
+      return {
+        min: finite[0],
+        median: percentile(finite, 0.5),
+        max: finite[finite.length - 1],
+        clippedBelow: finite.filter(value => value < scale.minDb).length,
+        clippedAbove: finite.filter(value => value > scale.maxDb).length,
+        total: finite.length
+      };
+    }
+
+    function targetAutoSpectrumScale(values) {
+      const finite = finiteSpectrumValues(values).sort((a, b) => a - b);
+      if (!finite.length) return { minDb: state.spectrumDisplay.yMinDb, maxDb: state.spectrumDisplay.yMaxDb };
+      let minDb = Math.floor((percentile(finite, 0.1) - 6) / 5) * 5;
+      let maxDb = Math.ceil((percentile(finite, 0.95) + 8) / 5) * 5;
+      if (maxDb - minDb < 40) {
+        const center = (maxDb + minDb) / 2;
+        minDb = center - 20;
+        maxDb = center + 20;
+      }
+      return { minDb, maxDb };
+    }
+
+    function autoSmoothingAlpha(mode) {
+      if (mode === "medium") return 0.08;
+      if (mode === "low") return 0.16;
+      return 0.28;
+    }
+
+    function smoothAutoSpectrumScale(previous, target, smoothing) {
+      if (!previous) return { ...target };
+      const alpha = autoSmoothingAlpha(smoothing);
+      let minDb = previous.minDb + (target.minDb - previous.minDb) * alpha;
+      let maxDb = previous.maxDb + (target.maxDb - previous.maxDb) * alpha;
+      if (maxDb - minDb < 40) {
+        const center = (maxDb + minDb) / 2;
+        minDb = center - 20;
+        maxDb = center + 20;
+      }
+      return { minDb, maxDb };
+    }
+
+    function currentSpectrumScale(values) {
+      if (state.spectrumDisplay.scaleMode !== "auto") {
+        return { mode: "fixed", minDb: state.spectrumDisplay.yMinDb, maxDb: state.spectrumDisplay.yMaxDb };
+      }
+      const target = targetAutoSpectrumScale(values);
+      state.spectrumAutoScale = smoothAutoSpectrumScale(state.spectrumAutoScale, target, state.spectrumDisplay.smoothing);
+      return { mode: "auto", minDb: state.spectrumAutoScale.minDb, maxDb: state.spectrumAutoScale.maxDb };
+    }
+
+    function drawSpectrumGrid(ctx, geometry, scale) {
+      const step = majorGridStepDb(scale);
+      const firstTick = Math.ceil(scale.minDb / step) * step;
+      ctx.save();
+      ctx.font = "10px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let tick = firstTick; tick <= scale.maxDb + 0.001; tick += step) {
+        const y = powerDbToCanvasY(tick, scale, geometry);
+        ctx.beginPath();
+        ctx.moveTo(geometry.left, y);
+        ctx.lineTo(geometry.right, y);
+        ctx.strokeStyle = Math.abs(tick % 20) < 0.001 ? "rgba(143,162,174,.22)" : "rgba(143,162,174,.13)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "rgba(237,245,247,.72)";
+        ctx.fillText(String(Math.round(tick)), geometry.left - 7, y);
+      }
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = "rgba(143,162,174,.9)";
+      ctx.fillText(SPECTRUM_UNIT_LABEL, 7, 5);
+      ctx.restore();
+    }
+
+    function drawSpectrumTrace(ctx, geometry, values, scale) {
+      const finite = finiteSpectrumValues(values);
+      if (!finite.length) return;
+      const gradient = ctx.createLinearGradient(0, geometry.top, 0, geometry.bottom);
+      gradient.addColorStop(0, "rgba(86,229,209,.34)");
+      gradient.addColorStop(1, "rgba(86,229,209,0)");
       ctx.beginPath();
-      ctx.moveTo(0, height - 18);
-      points.forEach(point => ctx.lineTo(point[0], point[1]));
-      ctx.lineTo(width, height - 18);
+      ctx.moveTo(geometry.left, geometry.bottom);
+      values.forEach((value, index) => {
+        if (!Number.isFinite(Number(value))) return;
+        const x = values.length === 1 ? geometry.left : geometry.left + index / (values.length - 1) * geometry.width;
+        ctx.lineTo(x, powerDbToCanvasY(value, scale, geometry));
+      });
+      ctx.lineTo(geometry.right, geometry.bottom);
       ctx.closePath();
       ctx.fillStyle = gradient;
       ctx.fill();
       ctx.beginPath();
-      points.forEach((point, index) => index ? ctx.lineTo(point[0], point[1]) : ctx.moveTo(point[0], point[1]));
+      let started = false;
+      values.forEach((value, index) => {
+        if (!Number.isFinite(Number(value))) return;
+        const x = values.length === 1 ? geometry.left : geometry.left + index / (values.length - 1) * geometry.width;
+        const y = powerDbToCanvasY(value, scale, geometry);
+        if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+      });
       ctx.strokeStyle = "#56e5d1";
       ctx.lineWidth = 1.4;
       ctx.stroke();
-      peaks.forEach(peak => {
-        const x = peak.x * width;
-        ctx.beginPath(); ctx.arc(x, 9, 2.5, 0, Math.PI * 2); ctx.fillStyle = "#87ed9b"; ctx.fill();
-        ctx.beginPath(); ctx.moveTo(x, 14); ctx.lineTo(x, height - 18); ctx.strokeStyle = "rgba(135,237,155,.18)"; ctx.lineWidth = 1; ctx.stroke();
+    }
+
+    function configuredMinSnrDb() {
+      const value = Number(String(el("threshold")?.value ?? "9").replace(",", ".").match(/-?\d+(?:\.\d+)?/)?.[0] ?? "9");
+      return Number.isFinite(value) ? value : 9;
+    }
+
+    function drawHorizontalReferenceLine(ctx, geometry, scale, value, label, color) {
+      if (!Number.isFinite(value)) return;
+      const y = powerDbToCanvasY(value, scale, geometry);
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(geometry.left, y);
+      ctx.lineTo(geometry.right, y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = "10px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = color;
+      ctx.fillText(label, geometry.left + 7, y - 3);
+      ctx.restore();
+    }
+
+    function drawSpectrumReferenceLines(ctx, geometry, scale, frame) {
+      const frameNoise = Number(frame?.noiseFloorDb);
+      const noiseFloor = Number.isFinite(frameNoise) ? frameNoise : state.latestNoiseFloorDb;
+      if (!Number.isFinite(noiseFloor)) return;
+      drawHorizontalReferenceLine(ctx, geometry, scale, noiseFloor, `NF ${noiseFloor.toFixed(1)} dB`, "rgba(122,168,255,.78)");
+      const threshold = noiseFloor + configuredMinSnrDb();
+      drawHorizontalReferenceLine(ctx, geometry, scale, threshold, `Threshold ${threshold.toFixed(1)} dB`, "rgba(255,204,106,.82)");
+    }
+
+    function drawSpectrumClippingIndicators(ctx, geometry, stats, scale) {
+      ctx.save();
+      ctx.font = "10px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
+      ctx.textAlign = "right";
+      ctx.textBaseline = "top";
+      if (stats.clippedAbove > 0) {
+        ctx.fillStyle = "rgba(255,204,106,.9)";
+        ctx.fillText(`CLIP ↑ ${stats.clippedAbove}`, geometry.right - 4, geometry.top + 4);
+      }
+      if (stats.total > 0 && stats.clippedBelow === stats.total) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(143,162,174,.72)";
+        ctx.fillText("Below display range", geometry.left + geometry.width / 2, geometry.bottom - 18);
+      }
+      ctx.restore();
+    }
+
+    function appendSpectrumDiagnostics(stats, scale) {
+      if (state.dashboardView !== "engineering" || stats.total <= 0) return;
+      const now = Date.now();
+      if (state.spectrumDiagnosticsLogged >= 8 || now - state.lastSpectrumDiagnosticLogMs < 5000) return;
+      state.spectrumDiagnosticsLogged += 1;
+      state.lastSpectrumDiagnosticLogMs = now;
+      appendLog("system", `Spectrum display · frame min <strong>${stats.min.toFixed(1)} dB</strong> · median <strong>${stats.median.toFixed(1)} dB</strong> · max <strong>${stats.max.toFixed(1)} dB</strong> · scale ${scale.minDb.toFixed(1)}…${scale.maxDb.toFixed(1)} dB · clipped ${stats.clippedBelow}↓/${stats.clippedAbove}↑`);
+    }
+
+    function renderSpectrumFrame(frame) {
+      const values = iqCorrectedSpectrumValues(frame?.powerDb || []);
+      if (!values.length) return;
+      const centerMhz = Number((frame.centerFrequencyHz || 0) / 1_000_000) || state.currentLO;
+      if (frame.usableSpanHz) state.usableSpanMhz = Number(frame.usableSpanHz) / 1_000_000;
+      const canvas = el("spectrumCanvas");
+      const { ctx, width, height } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, width, height);
+      const geometry = spectrumPlotGeometry(width, height);
+      const scale = currentSpectrumScale(values);
+      const stats = spectrumFrameStats(values, scale);
+      drawSpectrumGrid(ctx, geometry, scale);
+      drawSpectrumReferenceLines(ctx, geometry, scale, frame);
+      drawSpectrumTrace(ctx, geometry, values, scale);
+      drawSpectrumClippingIndicators(ctx, geometry, stats, scale);
+      appendSpectrumDiagnostics(stats, scale);
+      updateSpectrumLabels(centerMhz, frame.displayedStartFrequencyHz, frame.displayedEndFrequencyHz);
+      el("spectrumScaleSummary").textContent = `${SPECTRUM_UNIT_LABEL} · ${scale.mode} ${scale.minDb.toFixed(0)}…${scale.maxDb.toFixed(0)}`;
+    }
+
+    function generateDemoSpectrumFrame(current = state.currentLO) {
+      const binCount = 320;
+      const sampleSpan = state.usableSpanMhz;
+      const windowStart = current - sampleSpan / 2;
+      const values = Array.from({ length: binCount }, (_, index) => {
+        const n = index / Math.max(1, binCount - 1);
+        return 5.5 + Math.sin(n * 38) * 1.2 + Math.sin(n * 9) * 0.8 + (Math.random() - 0.5) * 1.5;
       });
+      signals
+        .filter(signal => signal.band === state.activeBand && !signal.dismissed && Math.abs(signal.freq - current) <= sampleSpan / 2)
+        .forEach(signal => {
+          const center = (signal.freq - windowStart) / sampleSpan;
+          const peakDb = signal.type === "analog" ? 68 : signal.type === "digital" ? 48 : 34;
+          values.forEach((value, index) => {
+            const n = index / Math.max(1, binCount - 1);
+            const distance = n - center;
+            values[index] = value + Math.exp(-(distance * distance) / 0.00042) * peakDb;
+          });
+        });
+      return {
+        centerFrequencyHz: Math.round(current * 1_000_000),
+        displayedStartFrequencyHz: Math.round((current - sampleSpan / 2) * 1_000_000),
+        displayedEndFrequencyHz: Math.round((current + sampleSpan / 2) * 1_000_000),
+        usableSpanHz: Math.round(sampleSpan * 1_000_000),
+        noiseFloorDb: state.latestNoiseFloorDb,
+        powerDb: values
+      };
+    }
+
+    function redrawCurrentSpectrum() {
+      if (state.latestSpectrumFrame) renderSpectrumFrame(state.latestSpectrumFrame);
+      else drawSpectrum(state.currentLO);
+    }
+
+    function drawEmptySpectrum(current = state.currentLO) {
+      const canvas = el("spectrumCanvas");
+      const { ctx, width, height } = setupCanvas(canvas);
+      ctx.clearRect(0, 0, width, height);
+      const geometry = spectrumPlotGeometry(width, height);
+      const scale = state.spectrumDisplay.scaleMode === "auto" && state.spectrumAutoScale
+        ? { mode: "auto", minDb: state.spectrumAutoScale.minDb, maxDb: state.spectrumAutoScale.maxDb }
+        : { mode: "fixed", minDb: state.spectrumDisplay.yMinDb, maxDb: state.spectrumDisplay.yMaxDb };
+      drawSpectrumGrid(ctx, geometry, scale);
+      drawSpectrumReferenceLines(ctx, geometry, scale, null);
+      updateSpectrumLabels(current);
+      el("spectrumScaleSummary").textContent = `${SPECTRUM_UNIT_LABEL} · ${scale.mode} ${scale.minDb.toFixed(0)}…${scale.maxDb.toFixed(0)}`;
+    }
+
+    function drawSpectrum(current = state.currentLO) {
+      if (!demoMode && state.latestSpectrumFrame) {
+        renderSpectrumFrame(state.latestSpectrumFrame);
+        return;
+      }
+      if (!demoMode) {
+        drawEmptySpectrum(current);
+        return;
+      }
+      state.latestSpectrumFrame = generateDemoSpectrumFrame(current);
+      renderSpectrumFrame(state.latestSpectrumFrame);
     }
 
     function iqCorrectedSpectrumValues(input) {
@@ -1888,7 +2325,7 @@
 
     function exportCsv() {
       const rows = [
-        ["measured_mhz", "nominal_fpv_mhz", "channel", "offset_mhz", "scan_range", "type", "peak_dbfs", "noise_floor_dbfs", "snr_db", "bandwidth_mhz", "direction", "rssi_trend_db_s", "confidence_percent", "status", "first_seen", "last_seen", "count"],
+        ["measured_mhz", "nominal_fpv_mhz", "channel", "offset_mhz", "scan_range", "type", "peak_db", "noise_floor_db", "snr_db", "bandwidth_mhz", "direction", "rssi_trend_db_s", "confidence_percent", "status", "first_seen", "last_seen", "count"],
         ...signals.filter(s => !s.dismissed).map(s => [s.freq.toFixed(1), s.nominal?.toFixed(1) ?? "", s.channel, s.offset?.toFixed(1) ?? "", s.range, s.label, s.rssi.toFixed(1), s.noiseFloor.toFixed(1), s.snr.toFixed(1), s.bandwidth.toFixed(1), directionMeta(s.direction).label, s.trend.toFixed(1), s.confidence, s.status, s.firstSeen, s.lastSeen, s.seen])
       ];
       const csv = rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
@@ -1952,6 +2389,7 @@
         rfBandwidthHz: Math.round(numberValue("rfBandwidth") * 1_000_000),
         frequencyStepHz: Math.round(numberValue("frequencyStep") * 1_000_000),
         usableSpanHz: Math.round(numberValue("usableSpan") * 1_000_000),
+        waterfallFrameRateFps: numberValue("waterfallFrameRate"),
         loSettlingMs: Math.round(numberValue("loSettling")),
         discardedFramesAfterRetune: Math.round(numberValue("discardFrames")),
         fastMeasurementMs: Math.round(numberValue("fastMeasurement")),
@@ -1973,7 +2411,9 @@
 
     function signalFromSnapshotRecord(record) {
       const measuredMhz = Number(record.measuredFrequencyMHz ?? ((record.measuredFrequencyHz ?? 0) / 1_000_000));
-      const nominalMhz = record.nominalFrequencyMHz == null ? null : Number(record.nominalFrequencyMHz);
+      const nominalMhz = record.nominalFrequencyMHz == null
+        ? (record.nominalFrequencyHz == null ? null : Number(record.nominalFrequencyHz) / 1_000_000)
+        : Number(record.nominalFrequencyMHz);
       const signalType = String(record.signalType || "UNKNOWN").toUpperCase();
       const type = signalType === "ANALOG" || signalType === "ANALOG_FPV" ? "analog" : signalType === "NARROWBAND" || signalType === "WIDEBAND_UNKNOWN" ? "digital" : "unknown";
       const label = signalType === "ANALOG" || signalType === "ANALOG_FPV" ? "Analog FPV" : signalType.replaceAll("_", " ").toLowerCase();
@@ -1984,6 +2424,7 @@
         freq: measuredMhz,
         nominal: nominalMhz,
         channel: record.nominalFrequencyHz ? `${record.bandName} / ${record.channelName}` : "UNALIGNED",
+        channelName: record.nominalFrequencyHz ? String(record.channelName || "") : "",
         offset: record.frequencyOffsetMHz == null ? null : Number(record.frequencyOffsetMHz),
         band: bandForRange(record.scanRange, measuredMhz),
         range: record.scanRange || record.bandName || "unknown",
@@ -2043,8 +2484,21 @@
       el("fftFrames").textContent = `${stats.receivedFftFrames ?? 0} rx`;
       el("fftSequence").textContent = `#${stats.receivedFftFrames ?? 0}`;
       el("retuneLatency").textContent = `${Number(snapshot.retuneLatencyMs ?? stats.averageRetuneLatencyMs ?? 0).toFixed(1)} ms`;
-      el("noiseFloor").textContent = snapshot.noiseFloorDb == null ? "-- dBFS" : `${Number(snapshot.noiseFloorDb).toFixed(1)} dBFS`;
+      const requestedFps = Number(snapshot.requestedWaterfallFrameRateFps);
+      const actualFps = Number(snapshot.actualWaterfallFrameRateFps);
+      el("waterfallFpsStatus").textContent = `req ${Number.isFinite(requestedFps) ? requestedFps.toFixed(1) : "--"} / actual ${Number.isFinite(actualFps) ? actualFps.toFixed(1) : "--"}`;
+      el("spectrometerStatus").textContent = `${snapshot.spectrometerConfigurationStatus || "unknown"} / ws ${snapshot.websocketConnectionStatus || "unknown"}`;
+      const snapshotNoiseFloor = Number(snapshot.noiseFloorDb);
+      const hasSnapshotNoiseFloor = Number.isFinite(snapshotNoiseFloor);
+      state.latestNoiseFloorDb = hasSnapshotNoiseFloor ? snapshotNoiseFloor : state.latestNoiseFloorDb;
+      el("noiseFloor").textContent = hasSnapshotNoiseFloor ? `${snapshotNoiseFloor.toFixed(1)} dB` : "-- dB";
       el("wsLatency").textContent = `${stats.websocketReconnects ?? 0} reconnects`;
+      if (snapshot.latestInitializationError && snapshot.latestInitializationError !== state.latestInitializationError) {
+        state.latestInitializationError = snapshot.latestInitializationError;
+        appendLog("error", `Scanner configuration error: ${snapshot.latestInitializationError}`);
+      } else if (!snapshot.latestInitializationError) {
+        state.latestInitializationError = null;
+      }
       signals = (snapshot.confirmedSignals || []).map(signalFromSnapshotRecord);
       if (signals.length && !signals.some(signal => signal.id === state.selectedSignal)) state.selectedSignal = signals[0].id;
       renderSignals();
@@ -2065,40 +2519,12 @@
     }
 
     function drawSpectrumFrame(frame) {
-      const values = iqCorrectedSpectrumValues(frame?.powerDb || []);
-      if (!values.length) return;
-      const centerMhz = Number((frame.centerFrequencyHz || 0) / 1_000_000) || state.currentLO;
-      if (frame.usableSpanHz) state.usableSpanMhz = Number(frame.usableSpanHz) / 1_000_000;
-      const canvas = el("spectrumCanvas");
-      const { ctx, width, height } = setupCanvas(canvas);
-      ctx.clearRect(0, 0, width, height);
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-      const span = Math.max(1, max - min);
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, "rgba(86,229,209,.34)");
-      gradient.addColorStop(1, "rgba(86,229,209,0)");
-      ctx.beginPath();
-      ctx.moveTo(0, height - 18);
-      values.forEach((value, index) => {
-        const x = values.length === 1 ? 0 : index / (values.length - 1) * width;
-        const y = height - 18 - ((value - min) / span) * (height - 32);
-        ctx.lineTo(x, y);
-      });
-      ctx.lineTo(width, height - 18);
-      ctx.closePath();
-      ctx.fillStyle = gradient;
-      ctx.fill();
-      ctx.beginPath();
-      values.forEach((value, index) => {
-        const x = values.length === 1 ? 0 : index / (values.length - 1) * width;
-        const y = height - 18 - ((value - min) / span) * (height - 32);
-        index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      });
-      ctx.strokeStyle = "#56e5d1";
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-      updateSpectrumLabels(centerMhz, frame.displayedStartFrequencyHz, frame.displayedEndFrequencyHz);
+      if (!frame) return;
+      state.latestSpectrumFrame = {
+        ...frame,
+        powerDb: Array.from(frame.powerDb || [], value => Number(value))
+      };
+      renderSpectrumFrame(state.latestSpectrumFrame);
     }
 
     window.scannerUi = {
@@ -2108,6 +2534,16 @@
         if (!event) return;
         appendLog(event.type || "system", event.message || "scanner event");
       }
+    };
+
+    window.spectrumDisplayTestApi = {
+      sanitizeSpectrumDisplaySettings,
+      spectrumDisplaySettings,
+      powerDbToCanvasY,
+      majorGridStepDb,
+      spectrumFrameStats,
+      targetAutoSpectrumScale,
+      smoothAutoSpectrumScale
     };
 
     if (!demoMode) {
@@ -2139,21 +2575,44 @@
     el("videoViewButton").addEventListener("click", () => demoMode ? setViewMode("video", true) : callAndroid("showVideo"));
     el("signalFilter").addEventListener("change", event => { state.filter = event.target.value; renderSignals(); });
     el("exportButton").addEventListener("click", exportCsv);
-    ["sampleRate", "rfBandwidth", "frequencyStep", "usableSpan", "loSettling", "discardFrames", "fastMeasurement", "dwellTime", "retuneTimeout", "candidateMeasurement", "revisitCount", "positiveRevisits", "fpvTolerance", "threshold"].forEach(id => {
-      el(id).addEventListener("change", event => appendLog("system", `${event.target.previousElementSibling.textContent}: <strong>${event.target.value}</strong>`));
+    ["spectrumScaleMode", "spectrumSmoothing", "spectrumYMin", "spectrumYMax"].forEach(id => {
+      el(id).addEventListener("change", () => {
+        applySpectrumDisplaySettings({
+          scaleMode: el("spectrumScaleMode").value,
+          smoothing: el("spectrumSmoothing").value,
+          yMinDb: Number(el("spectrumYMin").value),
+          yMaxDb: Number(el("spectrumYMax").value)
+        });
+      });
+    });
+    el("resetSpectrumDisplay").addEventListener("click", () => {
+      applySpectrumDisplaySettings({ ...SPECTRUM_DEFAULT_DISPLAY });
+      toast("Spectrum display reset");
+    });
+    SCAN_SETTING_IDS.forEach(id => {
+      el(id).addEventListener("change", event => {
+        persistScanSettings();
+        appendLog("system", `${event.target.previousElementSibling.textContent}: <strong>${event.target.value}</strong>`);
+        if (id === "waterfallFrameRate" || id === "discardFrames" || id === "loSettling" || id === "retuneTimeout") validateRetuneTimeoutInputs(false);
+        if (id === "threshold") redrawCurrentSpectrum();
+      });
     });
     el("resetSettings").addEventListener("click", () => {
-      const defaults = { sampleRate: "30.72 MSPS", rfBandwidth: "18 MHz", frequencyStep: "15 MHz", usableSpan: "15 MHz", loSettling: 5, discardFrames: 2, fastMeasurement: 10, dwellTime: 18, retuneTimeout: 250, candidateMeasurement: 75, revisitCount: 3, positiveRevisits: 2, fpvTolerance: 2.0, threshold: 9 };
+      const defaults = { sampleRate: "30.72 MSPS", rfBandwidth: "18 MHz", frequencyStep: "15 MHz", usableSpan: "15 MHz", waterfallFrameRate: 10, loSettling: 5, discardFrames: 2, fastMeasurement: 10, dwellTime: 18, retuneTimeout: 500, candidateMeasurement: 75, revisitCount: 3, positiveRevisits: 2, fpvTolerance: 2.0, threshold: 9 };
       Object.entries(defaults).forEach(([id, value]) => { el(id).value = value; });
+      persistScanSettings();
       appendLog("system", "Maia scan profile повернуто до типових значень"); toast("Типовий профіль відновлено");
     });
     el("applyScanConfig").addEventListener("click", () => {
+      persistScanSettings();
+      if (!validateRetuneTimeoutInputs(true)) return;
       if (state.viewMode === "video") setViewMode("spectrum");
       state.locked = false;
       state.scanning = true;
       state.phaseIndex = -1;
       setScannerPhase("CONFIGURING", "sending Maia waterfall profile · timeout guard 250 ms");
       appendLog("system", `Профіль застосовано · <strong>${el("sampleRate").value} / RF BW ${el("rfBandwidth").value}</strong> · step ${el("frequencyStep").value}`);
+      if (!demoMode) callAndroid("applyScanConfig", scanConfigJsonFromInputs());
       closeMainMenu();
       toast("Сканер перезапущено з новим профілем");
     });
@@ -2199,8 +2658,10 @@
     document.addEventListener("scroll", scheduleNativeVideoRectReport, { passive: true, capture: true });
 
     bindSignalTable();
+    loadScanSettings();
+    state.spectrumDisplay = storedSpectrumDisplaySettings();
+    updateSpectrumDisplayControls();
     setDashboardView(storedDashboardView(), false);
-    renderSignals();
     renderInitialLogs();
     if (demoMode && signals.length) selectSignal(signals[0].id);
     setActiveBand("5.x", false);
