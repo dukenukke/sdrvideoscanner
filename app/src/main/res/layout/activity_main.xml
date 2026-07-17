@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#02070B"
     android:orientation="vertical"
     android:paddingStart="4dp"
     android:paddingEnd="4dp"
@@ -12,8 +13,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:orientation="horizontal"
         android:gravity="center_vertical"
+        android:orientation="horizontal"
         android:visibility="gone">
 
         <Button
@@ -64,30 +65,17 @@
         android:textSize="12sp"
         android:visibility="gone" />
 
-    <WebView
-        android:id="@+id/scanner_web_view"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="0dp"
-        android:layout_weight="1" />
-
     <ScrollView
         android:id="@+id/signal_table_scroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="6dp"
-        android:layout_weight="1"
-        android:fillViewport="false"
         android:visibility="gone">
 
         <LinearLayout
             android:id="@+id/detected_signals_container"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingStart="4dp"
-            android:paddingEnd="4dp"
-            tools:ignore="UselessParent">
+            android:orientation="vertical">
 
             <TextView
                 android:id="@+id/no_signals_label"
@@ -100,40 +88,51 @@
     </ScrollView>
 
     <FrameLayout
-        android:id="@+id/video_frame_container"
+        android:id="@+id/scanner_web_host"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="0dp"
-        android:layout_marginTop="8dp"
-        android:layout_marginEnd="0dp">
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
-        <ImageView
-            android:id="@+id/video_frame_image"
+        <WebView
+            android:id="@+id/scanner_web_view"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:adjustViewBounds="true"
-            android:background="#111111"
-            android:contentDescription="Decoded grayscale analog video frame"
-            android:minHeight="260dp"
-            android:scaleType="fitCenter" />
+            android:layout_height="match_parent" />
 
-        <TextView
-            android:id="@+id/current_frequency_label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
-            android:layout_margin="8dp"
-            android:background="#AA000000"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingStart="10dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="6dp"
-            android:textColor="#FFFFFFFF"
-            android:textSize="13sp"
-            android:textStyle="bold"
-            tools:text="5.885 GHz" />
+        <FrameLayout
+            android:id="@+id/video_frame_container"
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:background="#030507"
+            android:clipToPadding="true"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/video_frame_image"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:adjustViewBounds="false"
+                android:background="#030507"
+                android:contentDescription="Decoded grayscale analog video frame"
+                android:scaleType="fitCenter" />
+
+            <TextView
+                android:id="@+id/current_frequency_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_margin="8dp"
+                android:background="#AA000000"
+                android:clickable="true"
+                android:focusable="true"
+                android:paddingStart="10dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="6dp"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                tools:text="5.885 GHz" />
+        </FrameLayout>
     </FrameLayout>
 
     <com.example.sdrvideoscanner.EdgeTimelineView
@@ -153,8 +152,7 @@
         android:layout_marginTop="6dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:visibility="gone"
-        tools:visibility="visible">
+        android:visibility="gone">
 
         <Button
             android:id="@+id/gain_down_button"
@@ -162,6 +160,7 @@
             android:layout_height="wrap_content"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
+            android:enabled="false"
             android:text="-5 dB" />
 
         <Button
@@ -171,6 +170,7 @@
             android:layout_marginStart="4dp"
             android:layout_marginEnd="4dp"
             android:layout_weight="1"
+            android:enabled="false"
             android:text="AGC" />
 
         <Button
@@ -179,6 +179,7 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
             android:layout_weight="1"
+            android:enabled="false"
             android:text="+5 dB" />
     </LinearLayout>
 

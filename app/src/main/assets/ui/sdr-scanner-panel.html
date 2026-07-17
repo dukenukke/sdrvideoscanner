@@ -147,6 +147,11 @@
       gap: 10px;
     }
 
+    .topbar-status,
+    #soundButton {
+      display: none !important;
+    }
+
     .device-pill,
     .status-pill,
     .mini-pill {
@@ -390,6 +395,24 @@
 
     .status-cluster-spaced { margin-top: 10px; flex-wrap: wrap; }
 
+    .view-profile-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .view-profile-button {
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      background: #0a1016;
+      cursor: pointer;
+    }
+
+    .view-profile-button:hover { color: var(--text); border-color: var(--line-bright); }
+    .view-profile-button.active { color: #031311; border-color: rgba(86, 229, 209, .5); background: var(--cyan); font-weight: 760; }
+
     .path-node {
       min-width: 0;
       padding: 9px 5px;
@@ -435,6 +458,16 @@
     }
 
     .active-frequency small { margin-left: 6px; color: var(--muted); font-size: .32em; letter-spacing: .02em; }
+
+    .active-candidates {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 10px;
+      color: var(--green);
+      font-size: .32em;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
 
     .hero-meta {
       display: flex;
@@ -576,26 +609,32 @@
     }
 
     .fft-edge-mask {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      width: 25.6%;
-      background: repeating-linear-gradient(135deg, rgba(255,127,135,.035) 0 6px, rgba(255,127,135,.09) 6px 7px);
-      border-color: rgba(255,127,135,.2);
+      display: none;
     }
 
-    .fft-edge-mask.left { left: 0; border-right: 1px dashed rgba(255,127,135,.3); }
-    .fft-edge-mask.right { right: 0; border-left: 1px dashed rgba(255,127,135,.3); }
+    .fft-edge-mask.left,
+    .fft-edge-mask.right { display: none; }
 
     .dc-notch {
+      display: none;
+    }
+
+    .iq-correction-marker {
       position: absolute;
-      top: 0;
-      bottom: 18px;
       left: 50%;
-      width: 6px;
+      bottom: 25px;
+      z-index: 2;
       transform: translateX(-50%);
-      background: rgba(255,204,106,.08);
-      border-inline: 1px dashed rgba(255,204,106,.28);
+      padding: 2px 6px;
+      border: 1px solid rgba(86, 229, 209, .18);
+      border-radius: 999px;
+      color: rgba(86, 229, 209, .7);
+      background: rgba(3, 5, 7, .58);
+      font-family: var(--mono);
+      font-size: 8px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      backdrop-filter: blur(5px);
     }
 
     .scan-cursor {
@@ -894,6 +933,85 @@
       font-size: 9px;
     }
 
+    body[data-dashboard-view="user"] .app-shell {
+      max-width: 100%;
+      padding: 8px;
+    }
+
+    body[data-dashboard-view="user"] .layout {
+      grid-template-columns: 1fr;
+    }
+
+    body[data-dashboard-view="user"] .right-column,
+    body[data-dashboard-view="user"] .brand-subtitle,
+    body[data-dashboard-view="user"] #activeBandLabel,
+    body[data-dashboard-view="user"] .hero-meta,
+    body[data-dashboard-view="user"] .scan-orbit,
+    body[data-dashboard-view="user"] .scanner-state-row,
+    body[data-dashboard-view="user"] .stats-grid,
+    body[data-dashboard-view="user"] .candidate-queue,
+    body[data-dashboard-view="user"] #exportButton,
+    body[data-dashboard-view="user"] .footer-line {
+      display: none !important;
+    }
+
+    body[data-dashboard-view="user"] .topbar {
+      min-height: 58px;
+      margin-bottom: 8px;
+      padding: 8px 10px;
+    }
+
+    body[data-dashboard-view="user"] .hero-panel {
+      padding: 12px;
+    }
+
+    body[data-dashboard-view="user"] .hero-top {
+      display: block;
+    }
+
+    body[data-dashboard-view="user"] .active-frequency {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 0 8px;
+      font-size: clamp(32px, 8vw, 76px);
+      letter-spacing: -.06em;
+    }
+
+    body[data-dashboard-view="user"] .active-candidates {
+      margin-left: 0;
+      font-size: clamp(13px, 2.1vw, 22px);
+      letter-spacing: .02em;
+    }
+
+    body[data-dashboard-view="user"] .spectrum-wrap {
+      height: clamp(360px, 64vw, 780px);
+      margin-top: 12px;
+    }
+
+    body[data-dashboard-view="user"] .spectrum-wrap.video-mode {
+      height: clamp(360px, 64vw, 780px);
+    }
+
+    body[data-dashboard-view="user"] .view-switch {
+      margin-top: 10px;
+    }
+
+    body[data-dashboard-view="user"] table {
+      min-width: 760px;
+    }
+
+    body[data-dashboard-view="user"] th:nth-child(4),
+    body[data-dashboard-view="user"] td:nth-child(4),
+    body[data-dashboard-view="user"] th:nth-child(8),
+    body[data-dashboard-view="user"] td:nth-child(8),
+    body[data-dashboard-view="user"] th:nth-child(9),
+    body[data-dashboard-view="user"] td:nth-child(9),
+    body[data-dashboard-view="user"] th:nth-child(10),
+    body[data-dashboard-view="user"] td:nth-child(10) {
+      display: none;
+    }
+
     .toast {
       position: fixed;
       right: 22px;
@@ -944,6 +1062,8 @@
       .compact-select { flex: 1; }
       .spectrum-wrap { height: 170px; }
       .spectrum-wrap.video-mode { height: min(68vw, 340px); }
+      body[data-dashboard-view="user"] .spectrum-wrap,
+      body[data-dashboard-view="user"] .spectrum-wrap.video-mode { height: min(74vh, 96vw); }
       .view-switch { align-items: flex-start; flex-direction: column; }
       .view-toggle-group { width: 100%; }
       .view-toggle { flex: 1; }
@@ -956,7 +1076,7 @@
     }
   </style>
 </head>
-<body>
+<body data-dashboard-view="user">
   <div class="app-shell">
     <header class="topbar">
       <button class="brand" id="mainMenuButton" type="button" aria-label="Відкрити головне меню" aria-expanded="false" aria-controls="mainMenuDrawer">
@@ -989,6 +1109,14 @@
         </button>
       </header>
       <div class="main-menu-body">
+        <section class="panel-section">
+          <div class="section-heading"><h2 class="section-title">Dashboard view</h2><span class="section-kicker" id="dashboardViewLabel">USER</span></div>
+          <div class="view-profile-options" role="group" aria-label="Dashboard view">
+            <button class="view-profile-button active" id="userDashboardButton" type="button" data-dashboard-view="user">User</button>
+            <button class="view-profile-button" id="engineeringDashboardButton" type="button" data-dashboard-view="engineering">Engineering</button>
+          </div>
+        </section>
+
         <section class="panel-section">
           <div class="section-heading"><h2 class="section-title">Scan ranges</h2><span class="section-kicker">UNIFORM SWEEP</span></div>
           <div class="band-list" id="bandList">
@@ -1065,7 +1193,7 @@
           <div class="hero-top">
             <div>
               <p class="eyebrow" id="activeBandLabel">Maia waterfall · 4.9—6.0 GHz</p>
-              <p class="active-frequency"><span id="currentFrequency">5 455.0</span><small>MHz LO</small></p>
+              <p class="active-frequency"><span id="currentFrequency">5 455.0</span><small>MHz LO</small><span class="active-candidates" id="activeCandidateCount">7 confirmed</span></p>
               <div class="hero-meta">
                 <span>window <strong id="channelIndex">38 / 74</strong></span>
                 <span>step <strong>15 MHz</strong></span>
@@ -1083,6 +1211,7 @@
             <span class="video-demo-badge" id="videoDemoBadge" hidden><span class="dot"></span>Demo decode · 5.925 GHz</span>
             <div class="spectrum-overlay" id="spectrumOverlay">
               <span class="fft-edge-mask left"></span><span class="fft-edge-mask right"></span><span class="dc-notch"></span>
+              <span class="iq-correction-marker">IQ corr</span>
               <div class="scan-cursor" id="scanCursor"></div>
               <div class="spectrum-labels"><span id="spectrumStart">5.4396 GHz</span><span id="spectrumMid">5.4550 GHz</span><span id="spectrumEnd">5.4704 GHz</span></div>
             </div>
@@ -1231,7 +1360,9 @@
       completedSteps: 0,
       lastRevisitStep: -1,
       logCount: initialLogs.length,
-      sessionStarted: Date.now() - 522000
+      sessionStarted: Date.now() - 522000,
+      dashboardView: "user",
+      usableSpanMhz: 15.0
     };
 
     const el = id => document.getElementById(id);
@@ -1243,6 +1374,34 @@
       el("toast").classList.add("visible");
       clearTimeout(toast.timer);
       toast.timer = setTimeout(() => el("toast").classList.remove("visible"), 2200);
+    }
+
+    function storedDashboardView() {
+      try {
+        const value = localStorage.getItem("scannerDashboardView");
+        return value === "engineering" ? "engineering" : "user";
+      } catch (_) {
+        return "user";
+      }
+    }
+
+    function setDashboardView(view, persist = true) {
+      const nextView = view === "engineering" ? "engineering" : "user";
+      state.dashboardView = nextView;
+      document.body.dataset.dashboardView = nextView;
+      el("dashboardViewLabel").textContent = nextView === "engineering" ? "ENGINEERING" : "USER";
+      document.querySelectorAll(".view-profile-button[data-dashboard-view]").forEach(button => {
+        const active = button.dataset.dashboardView === nextView;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      if (persist) {
+        try { localStorage.setItem("scannerDashboardView", nextView); } catch (_) {}
+      }
+      requestAnimationFrame(() => {
+        drawSpectrum(state.currentLO);
+        reportNativeVideoRect(state.viewMode === "video");
+      });
     }
 
     function openMainMenu() {
@@ -1359,6 +1518,7 @@
       });
       const count = signals.filter(signal => !signal.dismissed).length;
       el("foundCount").textContent = `${count} confirmed`;
+      el("activeCandidateCount").textContent = `${count} confirmed`;
     }
 
     function handleSignalRowActivation(id) {
@@ -1414,17 +1574,19 @@
       el("visualStage").setAttribute("aria-label", showVideo ? "Декодоване Analog FPV відео" : "Демонстраційний спектр активного діапазону");
       el("spectrumCanvas").hidden = showVideo;
       el("spectrumOverlay").hidden = showVideo;
-      el("decodedVideo").hidden = !showVideo;
-      el("videoDemoBadge").hidden = !showVideo;
+      el("decodedVideo").hidden = !showVideo || !demoMode;
+      el("videoDemoBadge").hidden = !showVideo || !demoMode;
       el("progressTrack").hidden = showVideo;
       el("spectrumViewButton").setAttribute("aria-pressed", String(!showVideo));
       el("videoViewButton").setAttribute("aria-pressed", String(showVideo));
 
       if (showVideo) {
-        el("decodedVideo").play().catch(() => toast("Натисніть «Декодоване відео» ще раз для відтворення"));
+        if (demoMode) el("decodedVideo").play().catch(() => toast("Натисніть «Декодоване відео» ще раз для відтворення"));
+        else setTimeout(() => reportNativeVideoRect(true), 0);
         if (announce) appendLog("success", `Частоту <strong>${formatFrequency(signal.freq)} MHz</strong> зафіксовано · відкрито декодоване відео`);
       } else {
         el("decodedVideo").pause();
+        reportNativeVideoRect(false);
         updateSpectrumLabels(state.currentLO);
         drawSpectrum(state.currentLO);
         if (announce) appendLog("system", "Фіксацію знято · сканування частот відновлено");
@@ -1509,11 +1671,12 @@
       return Math.min(band.end - 7.5, band.start + 7.5 + (channel - 1) * 15);
     }
 
-    function updateSpectrumLabels(center) {
-      const halfSampleSpan = 15.36;
-      el("spectrumStart").textContent = `${((center - halfSampleSpan) / 1000).toFixed(4)} GHz`;
+    function updateSpectrumLabels(center, displayedStartHz = null, displayedEndHz = null) {
+      const startMhz = displayedStartHz == null ? center - state.usableSpanMhz / 2 : Number(displayedStartHz) / 1_000_000;
+      const endMhz = displayedEndHz == null ? center + state.usableSpanMhz / 2 : Number(displayedEndHz) / 1_000_000;
+      el("spectrumStart").textContent = `${(startMhz / 1000).toFixed(4)} GHz`;
       el("spectrumMid").textContent = `${(center / 1000).toFixed(4)} GHz`;
-      el("spectrumEnd").textContent = `${((center + halfSampleSpan) / 1000).toFixed(4)} GHz`;
+      el("spectrumEnd").textContent = `${(endMhz / 1000).toFixed(4)} GHz`;
     }
 
     function setScannerPhase(name, detail) {
@@ -1648,7 +1811,7 @@
       const gradient = ctx.createLinearGradient(0, 0, 0, height);
       gradient.addColorStop(0, "rgba(86,229,209,.32)");
       gradient.addColorStop(1, "rgba(86,229,209,0)");
-      const sampleSpan = 30.72;
+      const sampleSpan = state.usableSpanMhz;
       const windowStart = current - sampleSpan / 2;
       const peaks = signals
         .filter(signal => signal.band === state.activeBand && !signal.dismissed && Math.abs(signal.freq - current) <= sampleSpan / 2)
@@ -1661,7 +1824,6 @@
           const distance = Math.abs(nx - peak.x);
           amp += Math.exp(-(distance * distance) / .00042) * (.34 + peak.power * .43);
         });
-        amp += Math.exp(-Math.pow(nx - .5, 2) / .00018) * .035;
         points.push([x, height - 18 - Math.min(.94, amp) * (height - 36)]);
       }
       ctx.beginPath();
@@ -1681,6 +1843,27 @@
         ctx.beginPath(); ctx.arc(x, 9, 2.5, 0, Math.PI * 2); ctx.fillStyle = "#87ed9b"; ctx.fill();
         ctx.beginPath(); ctx.moveTo(x, 14); ctx.lineTo(x, height - 18); ctx.strokeStyle = "rgba(135,237,155,.18)"; ctx.lineWidth = 1; ctx.stroke();
       });
+    }
+
+    function iqCorrectedSpectrumValues(input) {
+      const values = Array.from(input || [], value => Number(value));
+      const count = values.length;
+      if (count < 9) return values;
+      const center = Math.floor(count / 2);
+      const guardBins = Math.max(1, Math.round(count * 0.006));
+      const leftRef = Math.max(0, center - guardBins - 3);
+      const rightRef = Math.min(count - 1, center + guardBins + 3);
+      const leftPower = values[leftRef];
+      const rightPower = values[rightRef];
+      if (!Number.isFinite(leftPower) || !Number.isFinite(rightPower)) return values;
+      const start = Math.max(0, center - guardBins);
+      const end = Math.min(count - 1, center + guardBins);
+      const span = Math.max(1, end - start);
+      for (let index = start; index <= end; index += 1) {
+        const t = (index - start) / span;
+        values[index] = leftPower + (rightPower - leftPower) * t;
+      }
+      return values;
     }
 
     function drawFocus(signal) {
@@ -1732,6 +1915,34 @@
       }
       bridge[command](...args.map(value => String(value)));
       return true;
+    }
+
+    function reportNativeVideoRect(visible) {
+      if (demoMode) return;
+      const stage = el("visualStage");
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+      const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+      const frameVisible = Boolean(visible) && rect.bottom > 0 && rect.right > 0 && rect.top < viewportHeight && rect.left < viewportWidth;
+      callAndroid("updateVideoRect", JSON.stringify({
+        left: Math.max(0, rect.left),
+        top: Math.max(0, rect.top),
+        width: Math.max(0, rect.width),
+        height: Math.max(0, rect.height),
+        viewportWidth,
+        viewportHeight,
+        visible: frameVisible
+      }));
+    }
+
+    let nativeVideoRectFrame = 0;
+    function scheduleNativeVideoRectReport() {
+      if (demoMode || state.viewMode !== "video" || nativeVideoRectFrame) return;
+      nativeVideoRectFrame = requestAnimationFrame(() => {
+        nativeVideoRectFrame = 0;
+        reportNativeVideoRect(true);
+      });
     }
 
     function scanConfigJsonFromInputs() {
@@ -1800,11 +2011,11 @@
       el("spectrumCanvas").hidden = videoMode;
       el("spectrumOverlay").hidden = videoMode;
       el("decodedVideo").hidden = true;
-      el("videoDemoBadge").hidden = !videoMode;
-      if (videoMode) el("videoDemoBadge").textContent = "Native Android video decode";
+      el("videoDemoBadge").hidden = true;
       el("progressTrack").hidden = videoMode;
       el("spectrumViewButton").setAttribute("aria-pressed", String(!videoMode));
       el("videoViewButton").setAttribute("aria-pressed", String(videoMode));
+      setTimeout(() => reportNativeVideoRect(videoMode), 0);
     }
 
     function applySnapshot(snapshot) {
@@ -1854,8 +2065,10 @@
     }
 
     function drawSpectrumFrame(frame) {
-      const values = frame?.powerDb || [];
+      const values = iqCorrectedSpectrumValues(frame?.powerDb || []);
       if (!values.length) return;
+      const centerMhz = Number((frame.centerFrequencyHz || 0) / 1_000_000) || state.currentLO;
+      if (frame.usableSpanHz) state.usableSpanMhz = Number(frame.usableSpanHz) / 1_000_000;
       const canvas = el("spectrumCanvas");
       const { ctx, width, height } = setupCanvas(canvas);
       ctx.clearRect(0, 0, width, height);
@@ -1885,7 +2098,7 @@
       ctx.strokeStyle = "#56e5d1";
       ctx.lineWidth = 1.4;
       ctx.stroke();
-      updateSpectrumLabels(Number((frame.centerFrequencyHz || 0) / 1_000_000) || state.currentLO);
+      updateSpectrumLabels(centerMhz, frame.displayedStartFrequencyHz, frame.displayedEndFrequencyHz);
     }
 
     window.scannerUi = {
@@ -1907,6 +2120,12 @@
     el("mainMenuButton").addEventListener("click", openMainMenu);
     el("mainMenuClose").addEventListener("click", () => closeMainMenu());
     el("menuBackdrop").addEventListener("click", () => closeMainMenu());
+    document.querySelectorAll(".view-profile-button[data-dashboard-view]").forEach(button => {
+      button.addEventListener("click", () => {
+        setDashboardView(button.dataset.dashboardView);
+        closeMainMenu(false);
+      });
+    });
     document.addEventListener("keydown", event => {
       if (event.key === "Escape" && el("mainMenuDrawer").classList.contains("open")) closeMainMenu();
     });
@@ -1970,9 +2189,17 @@
       toast("Сканування продовжено");
     });
 
-    window.addEventListener("resize", () => { drawSpectrum(); const signal = signals.find(item => item.id === state.selectedSignal); if (signal) drawFocus(signal); });
+    window.addEventListener("resize", () => {
+      drawSpectrum();
+      reportNativeVideoRect(state.viewMode === "video");
+      const signal = signals.find(item => item.id === state.selectedSignal);
+      if (signal) drawFocus(signal);
+    });
+    window.addEventListener("scroll", scheduleNativeVideoRectReport, { passive: true });
+    document.addEventListener("scroll", scheduleNativeVideoRectReport, { passive: true, capture: true });
 
     bindSignalTable();
+    setDashboardView(storedDashboardView(), false);
     renderSignals();
     renderInitialLogs();
     if (demoMode && signals.length) selectSignal(signals[0].id);
