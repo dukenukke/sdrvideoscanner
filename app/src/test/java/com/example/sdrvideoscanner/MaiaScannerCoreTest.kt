@@ -27,6 +27,22 @@ class MaiaScannerCoreTest {
     }
 
     @Test
+    fun scanWindowsAreGeneratedFromLowestToHighestFrequencyIgnoringPriority() {
+        val config = MaiaScanConfig(frequencyStepHz = 15_000_000L, usableSpanHz = 15_000_000L)
+        val ranges = listOf(
+            ScanRange("band_5g8", 5_700_000_000L, 5_900_000_000L, enabled = true, rfPathId = "band_5g8", priority = 100),
+            ScanRange("band_1g2", 1_200_000_000L, 1_400_000_000L, enabled = true, rfPathId = "band_1g2", priority = 1),
+            ScanRange("band_3g3", 3_200_000_000L, 3_500_000_000L, enabled = true, rfPathId = "band_3g3", priority = 50),
+        )
+
+        val windows = MaiaScanPlanner.generateWindows(ranges, config)
+        val rangeOrder = windows.map { it.rangeId }.distinct()
+
+        assertEquals(listOf("band_1g2", "band_3g3", "band_5g8"), rangeOrder)
+        assertEquals(windows.map { it.centerFrequencyHz }.sorted(), windows.map { it.centerFrequencyHz })
+    }
+
+    @Test
     fun fftBinToFrequencyUsesBinCenter() {
         val frame = WaterfallFrame(
             centerFrequencyHz = 100_000_000L,
