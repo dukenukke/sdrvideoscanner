@@ -276,7 +276,30 @@
     .main-menu-title { margin: 0; font-size: 15px; letter-spacing: .08em; text-transform: uppercase; }
     .main-menu-subtitle { margin: 3px 0 0; color: var(--muted); font-family: var(--mono); font-size: 10px; }
     .main-menu-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-    .main-menu-body .panel-section { padding: 20px; }
+    .main-menu-body .panel-section { padding: 0; }
+    .menu-section > summary {
+      min-height: 54px;
+      padding: 16px 20px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .menu-section > summary::-webkit-details-marker { display: none; }
+    .menu-section > summary::after {
+      content: "⌄";
+      color: var(--muted);
+      font-family: var(--mono);
+      transition: transform .16s ease;
+    }
+    .menu-section[open] > summary::after { transform: rotate(180deg); }
+    .menu-section > .field-grid,
+    .menu-section > .band-list,
+    .menu-section > .view-profile-options,
+    .menu-section > .signal-path,
+    .menu-section > .status-cluster,
+    .menu-section > .form-note,
+    .menu-section > .menu-action-row {
+      margin: 0 20px 20px;
+    }
 
     .panel {
       border: 1px solid var(--line);
@@ -375,6 +398,61 @@
 
     .field input:hover,
     .field select:hover { border-color: var(--line-bright); }
+    .field input.field-invalid,
+    .field select.field-invalid {
+      border-color: rgba(255, 127, 135, .72);
+    }
+
+    .field-error {
+      display: block;
+      margin-top: 5px;
+      color: var(--red);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .radio-row,
+    .checkbox-row {
+      display: grid;
+      gap: 8px;
+    }
+
+    .radio-row { grid-template-columns: 1fr 1fr; }
+
+    .radio-pill,
+    .checkbox-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 39px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--muted);
+      background: #0a1016;
+      font-size: 12px;
+    }
+
+    .radio-pill input,
+    .checkbox-pill input {
+      width: auto;
+      min-height: auto;
+      accent-color: var(--cyan);
+    }
+
+    .form-note {
+      color: var(--muted-2);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .menu-action-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    body[data-dashboard-view="user"] .engineering-menu-only { display: none; }
 
     .range-line {
       display: grid;
@@ -1140,16 +1218,16 @@
         </button>
       </header>
       <div class="main-menu-body">
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Dashboard view</h2><span class="section-kicker" id="dashboardViewLabel">USER</span></div>
+        <details class="panel-section menu-section" open>
+          <summary class="section-heading"><h2 class="section-title">Interface</h2><span class="section-kicker" id="dashboardViewLabel">USER</span></summary>
           <div class="view-profile-options" role="group" aria-label="Dashboard view">
             <button class="view-profile-button active" id="userDashboardButton" type="button" data-dashboard-view="user">User</button>
             <button class="view-profile-button" id="engineeringDashboardButton" type="button" data-dashboard-view="engineering">Engineering</button>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Spectrum display</h2><button class="btn btn-ghost btn-small" type="button" id="resetSpectrumDisplay">Reset</button></div>
+        <details class="panel-section menu-section">
+          <summary class="section-heading"><h2 class="section-title">Spectrum display</h2><button class="btn btn-ghost btn-small" type="button" id="resetSpectrumDisplay">Reset</button></summary>
           <div class="field-grid">
             <div class="field-row">
               <div class="field"><label for="spectrumScaleMode">Scale mode</label><select id="spectrumScaleMode"><option value="fixed" selected>Fixed</option><option value="auto">Auto</option></select></div>
@@ -1161,20 +1239,20 @@
             </div>
             <div class="status-cluster"><span class="mini-pill" id="spectrumScaleSummary">Power, dB · fixed 0…90</span></div>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Scan ranges</h2><span class="section-kicker">UNIFORM SWEEP</span></div>
+        <details class="panel-section menu-section">
+          <summary class="section-heading"><h2 class="section-title">Scanning</h2><span class="section-kicker">RANGES</span></summary>
           <div class="band-list" id="bandList">
             <button class="band-button" type="button" data-band="1.2" data-start="1200" data-end="1400"><span class="band-indicator"></span><span><span class="band-name">1.2—1.4 GHz</span><span class="band-range">RF1 · priority 3 · enabled</span></span><span class="band-count" data-count="1.2">2</span></button>
             <button class="band-button" type="button" data-band="2.4" data-start="2300" data-end="2500"><span class="band-indicator"></span><span><span class="band-name">2.3—2.5 GHz</span><span class="band-range">RF2 · priority 2 · enabled</span></span><span class="band-count" data-count="2.4">1</span></button>
             <button class="band-button" type="button" data-band="3.3" data-start="3200" data-end="3500"><span class="band-indicator"></span><span><span class="band-name">3.2—3.5 GHz</span><span class="band-range">RF3 · priority 1 · enabled</span></span><span class="band-count" data-count="3.3">1</span></button>
             <button class="band-button active" type="button" data-band="5.x" data-start="4900" data-end="6000" aria-current="true"><span class="band-indicator"></span><span><span class="band-name">4.9—6.0 GHz</span><span class="band-range">RF4 · priority 0 · enabled</span></span><span class="band-count" data-count="5.x">3</span></button>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Maia connection</h2><span class="section-kicker" id="wsMenuState">CONNECTED</span></div>
+        <details class="panel-section menu-section">
+          <summary class="section-heading"><h2 class="section-title">Connection</h2><span class="section-kicker" id="wsMenuState">CONNECTED</span></summary>
           <div class="field-grid">
             <div class="field"><label for="maiaEndpoint">Waterfall WebSocket</label><input id="maiaEndpoint" type="text" value="ws://192.168.2.1/waterfall" spellcheck="false"></div>
             <div class="field-row">
@@ -1183,10 +1261,74 @@
             </div>
             <div class="status-cluster"><span class="mini-pill">waterfall only</span><span class="mini-pill">no raw IQ while scanning</span></div>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Fast sweep</h2><button class="btn btn-ghost btn-small" type="button" id="resetSettings">Скинути</button></div>
+        <details class="panel-section menu-section">
+          <summary class="section-heading"><h2 class="section-title">IQ Replay</h2><span class="section-kicker">CS8 / CS16</span></summary>
+          <p class="form-note">Select a .cs8 or .cs16 IQ capture. If Android's file picker allows multi-select, select the same-name .json sidecar with it so sample_rate_hz and RF metadata are loaded.</p>
+          <div class="menu-action-row">
+            <button class="btn btn-primary" id="playIqFile" type="button">Play IQ file</button>
+            <button class="btn" id="decodeIqFile" type="button">Decode first frame</button>
+          </div>
+        </details>
+
+        <details class="panel-section menu-section engineering-menu-only" id="iqSettingsSection">
+          <summary class="section-heading"><h2 class="section-title">IQ Settings</h2><span class="section-kicker" id="iqSettingsStatus">ANDROID OWNED</span></summary>
+          <p class="form-note">Values are validated by Android and saved through the existing IQ preferences. Tezuka Maia HTTPD raw IQ is ws://host/iq and Record IQ always writes CS8.</p>
+          <div class="status-cluster"><span class="mini-pill" id="iqEffectiveLo">actual LO -- Hz</span></div>
+          <div class="field-grid">
+            <div class="field">
+              <label>IQ source for scanner/playback algorithm</label>
+              <div class="radio-row" role="radiogroup" aria-label="IQ source">
+                <label class="radio-pill"><input type="radio" name="iqSource" id="iqSourceIio" value="iio">Pluto IP IIO</label>
+                <label class="radio-pill"><input type="radio" name="iqSource" id="iqSourceWebsocket" value="websocket">Maia IQ WebSocket</label>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="iqMaiaHost">Maia HTTPD host</label><input id="iqMaiaHost" type="text" inputmode="url" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="iqMaiaPort">Maia HTTPD port</label><input id="iqMaiaPort" type="number" min="1" max="65535" step="1"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="iqPlutoWsPath">Maia IQ WebSocket path</label><input id="iqPlutoWsPath" type="text" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="iqPlutoWsReceiveBuffer">Maia IQ receive buffer, ms</label><input id="iqPlutoWsReceiveBuffer" type="number" min="50" max="150" step="1"></div>
+            </div>
+            <div class="field">
+              <label>IQ sample format</label>
+              <div class="radio-row" role="radiogroup" aria-label="IQ sample format">
+                <label class="radio-pill"><input type="radio" name="iqSampleFormat" id="iqSampleFormatCs16" value="CS16">CS16</label>
+                <label class="radio-pill"><input type="radio" name="iqSampleFormat" id="iqSampleFormatCs8" value="CS8">CS8</label>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="iqCenterFrequency">Center frequency, Hz</label><input id="iqCenterFrequency" type="number" min="1" step="1"></div>
+              <div class="field"><label for="iqSampleRate">Sample rate, Hz</label><input id="iqSampleRate" type="number" min="1" step="1"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="iqRfBandwidth">RF bandwidth, Hz</label><input id="iqRfBandwidth" type="number" min="1" step="1"></div>
+              <div class="field"><label for="iqGain">RX gain, dB</label><input id="iqGain" type="number" step="0.1"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="iqCaptureDuration">Capture duration, seconds</label><input id="iqCaptureDuration" type="number" min="0.000001" step="0.1"></div>
+              <div class="field"><label for="iqLoOffset">LO offset, Hz</label><input id="iqLoOffset" type="number" step="1"></div>
+            </div>
+            <div class="field">
+              <label>Hardware corrections</label>
+              <div class="checkbox-row">
+                <label class="checkbox-pill"><input id="iqHardwareIqCorrection" type="checkbox">Hardware IQ imbalance correction (IQ)</label>
+                <label class="checkbox-pill"><input id="iqHardwareBbdcCorrection" type="checkbox">Hardware baseband DC removal (BBDC)</label>
+                <label class="checkbox-pill"><input id="iqHardwareRfdcCorrection" type="checkbox">Hardware RF DC removal (RFDC)</label>
+              </div>
+            </div>
+          </div>
+          <div class="menu-action-row">
+            <button class="btn btn-primary" id="applyIqConfig" type="button">Apply</button>
+            <button class="btn" id="resetIqConfig" type="button">Reset</button>
+            <button class="btn btn-ghost" id="cancelIqConfig" type="button">Cancel</button>
+          </div>
+        </details>
+
+        <details class="panel-section menu-section">
+          <summary class="section-heading"><h2 class="section-title">Fast sweep</h2><button class="btn btn-ghost btn-small" type="button" id="resetSettings">Скинути</button></summary>
           <div class="field-grid">
             <div class="field-row">
               <div class="field"><label for="frequencyStep">Frequency step</label><select id="frequencyStep"><option selected>15 MHz</option><option>12 MHz</option><option>10 MHz</option></select></div>
@@ -1203,10 +1345,10 @@
             </div>
             <div class="field"><label for="retuneTimeout">Retune timeout, ms</label><input id="retuneTimeout" type="number" min="50" max="1000" step="10" value="500"></div>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">Candidate analysis</h2><span class="section-kicker">REVISIT + CLASSIFY</span></div>
+        <details class="panel-section menu-section engineering-menu-only">
+          <summary class="section-heading"><h2 class="section-title">Spectrum and detection</h2><span class="section-kicker">REVISIT + CLASSIFY</span></summary>
           <div class="field-grid">
             <div class="field-row">
               <div class="field"><label for="candidateMeasurement">Measurement, ms</label><input id="candidateMeasurement" type="number" min="25" max="500" value="75"></div>
@@ -1219,17 +1361,17 @@
             <div class="field"><label for="threshold">Peak over noise</label><input id="threshold" type="number" min="3" max="30" step="1" value="9"></div>
             <button class="btn btn-primary" id="applyScanConfig" type="button">Застосувати й перезапустити scanner</button>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-section">
-          <div class="section-heading"><h2 class="section-title">RF тракт</h2><span class="section-kicker">READY</span></div>
+        <details class="panel-section menu-section engineering-menu-only">
+          <summary class="section-heading"><h2 class="section-title">Hardware control</h2><span class="section-kicker">READY</span></summary>
           <div class="signal-path" role="img" aria-label="Антена, фільтр, мультиплексор, атенюатор, SDR">
             <span class="path-node active">BPF</span><span class="path-arrow">›</span><span class="path-node active">MUX 4</span><span class="path-arrow">›</span><span class="path-node">LNA BYP</span>
           </div>
           <div class="status-cluster status-cluster-spaced">
             <span class="mini-pill">settle 3 ms</span><span class="mini-pill">dummy controller</span>
           </div>
-        </section>
+        </details>
       </div>
     </aside>
 
@@ -1270,16 +1412,16 @@
               <button class="view-toggle" id="videoViewButton" type="button" aria-pressed="false">Декодоване відео</button>
             </div>
           </div>
-          <div class="scanner-state-row"><div class="scanner-state-main"><span class="scanner-state-label">Scanner state</span><span class="scanner-state-value" id="scannerPhase">COLLECTING</span></div><span class="scanner-state-detail" id="scannerPhaseDetail">6 FFT frames · discard 2 complete</span></div>
+          <div class="scanner-state-row"><div class="scanner-state-main"><span class="scanner-state-label" id="phaseLabel">Scanner state</span><span class="scanner-state-value" id="scannerPhase">COLLECTING</span></div><span class="scanner-state-detail" id="scannerPhaseDetail">6 FFT frames · discard 2 complete</span></div>
           <div class="progress-track" id="progressTrack" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
 
           <div class="stats-grid" role="group" aria-label="Поточні показники">
-            <div class="stat"><span class="stat-label">Noise floor</span><span class="stat-value" id="noiseFloor">6.0 dB</span></div>
-            <div class="stat"><span class="stat-label">FFT frames</span><span class="stat-value" id="fftFrames">6 valid</span></div>
-            <div class="stat"><span class="stat-label">Retune latency</span><span class="stat-value" id="retuneLatency">8.4 ms</span></div>
-            <div class="stat"><span class="stat-label">Candidates</span><span class="stat-value good" id="foundCount">7 confirmed</span></div>
-            <div class="stat"><span class="stat-label">Waterfall FPS</span><span class="stat-value" id="waterfallFpsStatus">req 10.0 / actual --</span></div>
-            <div class="stat"><span class="stat-label">Spectrometer</span><span class="stat-value" id="spectrometerStatus">idle / ws disconnected</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelNoiseFloor">Noise floor</span><span class="stat-value" id="noiseFloor">6.0 dB</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelFftFrames">FFT frames</span><span class="stat-value" id="fftFrames">6 valid</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelRetuneLatency">Retune latency</span><span class="stat-value" id="retuneLatency">8.4 ms</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelFoundCount">Candidates</span><span class="stat-value good" id="foundCount">7 confirmed</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelWaterfallFps">Waterfall FPS</span><span class="stat-value" id="waterfallFpsStatus">req 10.0 / actual --</span></div>
+            <div class="stat"><span class="stat-label" id="statLabelSpectrometer">Spectrometer</span><span class="stat-value" id="spectrometerStatus">idle / ws disconnected</span></div>
           </div>
           <div class="candidate-queue"><span class="candidate-queue-copy"><strong id="candidateQueueTitle">Revisit queue: 3</strong> · next 5 885.4 MHz · 75 ms</span><span class="candidate-vote" id="candidateVote">vote 1 / 3</span></div>
         </article>
@@ -1424,6 +1566,9 @@
       latestSpectrumFrame: null,
       latestNoiseFloorDb: demoMode ? 6.0 : null,
       latestInitializationError: null,
+      iqConfig: null,
+      iqConfigDefaults: null,
+      iqDraftDirty: false,
       spectrumDiagnosticsLogged: 0,
       lastSpectrumDiagnosticLogMs: 0
     };
@@ -1504,6 +1649,39 @@
     }
 
     const SCAN_SETTING_IDS = ["sampleRate", "rfBandwidth", "frequencyStep", "usableSpan", "waterfallFrameRate", "loSettling", "discardFrames", "fastMeasurement", "dwellTime", "retuneTimeout", "candidateMeasurement", "revisitCount", "positiveRevisits", "fpvTolerance", "threshold"];
+    const IQ_FIELD_IDS = ["iqMaiaHost", "iqMaiaPort", "iqPlutoWsPath", "iqPlutoWsReceiveBuffer", "iqCenterFrequency", "iqSampleRate", "iqRfBandwidth", "iqGain", "iqCaptureDuration", "iqLoOffset", "iqHardwareIqCorrection", "iqHardwareBbdcCorrection", "iqHardwareRfdcCorrection"];
+    const IQ_CHOICE_IDS = ["iqSourceIio", "iqSourceWebsocket", "iqSampleFormatCs16", "iqSampleFormatCs8"];
+    const IQ_ERROR_FIELD_TO_INPUT = {
+      iqSource: "iqSourceWebsocket",
+      maiaHost: "iqMaiaHost",
+      maiaPort: "iqMaiaPort",
+      plutoWebSocketPath: "iqPlutoWsPath",
+      plutoWebSocketReceiveBufferMs: "iqPlutoWsReceiveBuffer",
+      sampleFormat: "iqSampleFormatCs8",
+      sampleRateHz: "iqSampleRate",
+      centerFrequencyHz: "iqCenterFrequency",
+      rfBandwidthHz: "iqRfBandwidth",
+      gainDb: "iqGain",
+      captureDurationSec: "iqCaptureDuration",
+      loOffsetHz: "iqLoOffset"
+    };
+    const DEFAULT_IQ_CONFIG = {
+      iqSource: "websocket",
+      maiaHost: "192.168.2.1",
+      maiaPort: 80,
+      plutoWebSocketPath: "/iq",
+      plutoWebSocketReceiveBufferMs: 120,
+      sampleFormat: "CS8",
+      sampleRateHz: 10000000,
+      centerFrequencyHz: 5885000000,
+      rfBandwidthHz: 20000000,
+      gainDb: 46.0,
+      captureDurationSec: 3.0,
+      loOffsetHz: 0,
+      hardwareIqCorrection: true,
+      hardwareBbdcCorrection: true,
+      hardwareRfdcCorrection: true
+    };
 
     function loadScanSettings() {
       try {
@@ -1520,6 +1698,123 @@
         SCAN_SETTING_IDS.forEach(id => { if (el(id)) values[id] = el(id).value; });
         localStorage.setItem(SCAN_SETTINGS_STORAGE_KEY, JSON.stringify(values));
       } catch (_) {}
+    }
+
+    function integerText(value) {
+      return String(Math.round(Number(value ?? 0)));
+    }
+
+    function numberValueFromInput(id) {
+      const text = String(el(id)?.value ?? "").trim().replace("_", "").replace(",", ".");
+      return Number(text);
+    }
+
+    function normalizeIqConfig(config = {}) {
+      const merged = { ...DEFAULT_IQ_CONFIG, ...(config || {}) };
+      return {
+        iqSource: String(merged.iqSource).toLowerCase() === "iio" ? "iio" : "websocket",
+        maiaHost: String(merged.maiaHost || DEFAULT_IQ_CONFIG.maiaHost).trim(),
+        maiaPort: Number(merged.maiaPort || DEFAULT_IQ_CONFIG.maiaPort),
+        plutoWebSocketPath: String(merged.plutoWebSocketPath || DEFAULT_IQ_CONFIG.plutoWebSocketPath).trim(),
+        plutoWebSocketReceiveBufferMs: Number(merged.plutoWebSocketReceiveBufferMs || DEFAULT_IQ_CONFIG.plutoWebSocketReceiveBufferMs),
+        sampleFormat: String(merged.sampleFormat).toUpperCase() === "CS16" ? "CS16" : "CS8",
+        sampleRateHz: Number(merged.sampleRateHz || DEFAULT_IQ_CONFIG.sampleRateHz),
+        centerFrequencyHz: Number(merged.centerFrequencyHz || DEFAULT_IQ_CONFIG.centerFrequencyHz),
+        rfBandwidthHz: Number(merged.rfBandwidthHz || DEFAULT_IQ_CONFIG.rfBandwidthHz),
+        gainDb: Number(merged.gainDb ?? DEFAULT_IQ_CONFIG.gainDb),
+        captureDurationSec: Number(merged.captureDurationSec ?? DEFAULT_IQ_CONFIG.captureDurationSec),
+        loOffsetHz: Number(merged.loOffsetHz ?? DEFAULT_IQ_CONFIG.loOffsetHz),
+        hardwareIqCorrection: Boolean(merged.hardwareIqCorrection),
+        hardwareBbdcCorrection: Boolean(merged.hardwareBbdcCorrection),
+        hardwareRfdcCorrection: Boolean(merged.hardwareRfdcCorrection)
+      };
+    }
+
+    function setChecked(id, checked) {
+      const input = el(id);
+      if (input) input.checked = Boolean(checked);
+    }
+
+    function populateIqConfigControls(config, clearDirty = true) {
+      const next = normalizeIqConfig(config);
+      state.iqConfig = next;
+      setChecked("iqSourceIio", next.iqSource === "iio");
+      setChecked("iqSourceWebsocket", next.iqSource !== "iio");
+      el("iqMaiaHost").value = next.maiaHost;
+      el("iqMaiaPort").value = integerText(next.maiaPort);
+      el("iqPlutoWsPath").value = next.plutoWebSocketPath;
+      el("iqPlutoWsReceiveBuffer").value = integerText(next.plutoWebSocketReceiveBufferMs);
+      setChecked("iqSampleFormatCs16", next.sampleFormat === "CS16");
+      setChecked("iqSampleFormatCs8", next.sampleFormat !== "CS16");
+      el("iqCenterFrequency").value = integerText(next.centerFrequencyHz);
+      el("iqSampleRate").value = integerText(next.sampleRateHz);
+      el("iqRfBandwidth").value = integerText(next.rfBandwidthHz);
+      el("iqGain").value = String(next.gainDb);
+      el("iqCaptureDuration").value = String(next.captureDurationSec);
+      el("iqLoOffset").value = integerText(next.loOffsetHz);
+      setChecked("iqHardwareIqCorrection", next.hardwareIqCorrection);
+      setChecked("iqHardwareBbdcCorrection", next.hardwareBbdcCorrection);
+      setChecked("iqHardwareRfdcCorrection", next.hardwareRfdcCorrection);
+      el("iqEffectiveLo").textContent = `actual LO ${integerText(next.centerFrequencyHz + next.loOffsetHz)} Hz`;
+      if (clearDirty) state.iqDraftDirty = false;
+      if (clearDirty) clearIqConfigErrors();
+    }
+
+    function iqConfigJsonFromInputs() {
+      return JSON.stringify({
+        iqSource: document.querySelector("input[name='iqSource']:checked")?.value || "websocket",
+        maiaHost: el("iqMaiaHost").value.trim(),
+        maiaPort: Math.round(numberValueFromInput("iqMaiaPort")),
+        plutoWebSocketPath: el("iqPlutoWsPath").value.trim(),
+        plutoWebSocketReceiveBufferMs: Math.round(numberValueFromInput("iqPlutoWsReceiveBuffer")),
+        sampleFormat: document.querySelector("input[name='iqSampleFormat']:checked")?.value || "CS8",
+        sampleRateHz: Math.round(numberValueFromInput("iqSampleRate")),
+        centerFrequencyHz: Math.round(numberValueFromInput("iqCenterFrequency")),
+        rfBandwidthHz: Math.round(numberValueFromInput("iqRfBandwidth")),
+        gainDb: numberValueFromInput("iqGain"),
+        captureDurationSec: numberValueFromInput("iqCaptureDuration"),
+        loOffsetHz: Math.round(numberValueFromInput("iqLoOffset")),
+        hardwareIqCorrection: el("iqHardwareIqCorrection").checked,
+        hardwareBbdcCorrection: el("iqHardwareBbdcCorrection").checked,
+        hardwareRfdcCorrection: el("iqHardwareRfdcCorrection").checked
+      });
+    }
+
+    function clearIqConfigErrors() {
+      document.querySelectorAll(".field-error[data-iq-error]").forEach(node => node.remove());
+      [...IQ_FIELD_IDS, ...IQ_CHOICE_IDS].forEach(id => {
+        const input = el(id);
+        if (!input) return;
+        input.classList.remove("field-invalid");
+        input.removeAttribute("aria-invalid");
+        input.removeAttribute("aria-describedby");
+        input.setCustomValidity("");
+      });
+    }
+
+    function showIqConfigErrors(errorPayload) {
+      clearIqConfigErrors();
+      const fieldErrors = errorPayload?.fieldErrors || {};
+      Object.entries(fieldErrors).forEach(([field, message]) => {
+        const inputId = IQ_ERROR_FIELD_TO_INPUT[field];
+        const input = inputId ? el(inputId) : null;
+        if (!input) return;
+        const fieldNode = input.closest(".field");
+        const error = document.createElement("span");
+        error.className = "field-error";
+        error.dataset.iqError = "true";
+        error.id = `${inputId}Error`;
+        error.textContent = message;
+        fieldNode?.append(error);
+        input.classList.add("field-invalid");
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", error.id);
+        input.setCustomValidity(message);
+      });
+      const message = errorPayload?.message || "Invalid IQ settings";
+      el("iqSettingsStatus").textContent = "REJECTED";
+      appendLog("warning", message);
+      toast(message);
     }
 
     function minimumRetuneTimeoutMsForInputs() {
@@ -2459,6 +2754,63 @@
       setTimeout(() => reportNativeVideoRect(videoMode), 0);
     }
 
+    function formatHzRate(value) {
+      const hz = Number(value);
+      if (!Number.isFinite(hz) || hz <= 0) return "--";
+      if (hz >= 1_000_000) return `${(hz / 1_000_000).toFixed(2)} MSPS`;
+      if (hz >= 1_000) return `${(hz / 1_000).toFixed(1)} kSPS`;
+      return `${Math.round(hz)} SPS`;
+    }
+
+    function formatDecoderFormat(value) {
+      const text = String(value || "--").replace("_25FPS", "").replace("_30FPS", "");
+      if (text === "PAL625") return "PAL";
+      if (text === "NTSC_525") return "NTSC";
+      return text;
+    }
+
+    function setStatLabels(labels) {
+      el("statLabelNoiseFloor").textContent = labels[0];
+      el("statLabelFftFrames").textContent = labels[1];
+      el("statLabelRetuneLatency").textContent = labels[2];
+      el("statLabelFoundCount").textContent = labels[3];
+      el("statLabelWaterfallFps").textContent = labels[4];
+      el("statLabelSpectrometer").textContent = labels[5];
+    }
+
+    function renderScannerStats(snapshot, stats) {
+      setStatLabels(["Noise floor", "FFT frames", "Retune latency", "Candidates", "Waterfall FPS", "Spectrometer"]);
+      el("phaseLabel").textContent = "Scanner state";
+      el("fftFrames").textContent = `${stats.receivedFftFrames ?? 0} rx`;
+      el("retuneLatency").textContent = `${Number(snapshot.retuneLatencyMs ?? stats.averageRetuneLatencyMs ?? 0).toFixed(1)} ms`;
+      const requestedFps = Number(snapshot.requestedWaterfallFrameRateFps);
+      const actualFps = Number(snapshot.actualWaterfallFrameRateFps);
+      el("waterfallFpsStatus").textContent = `req ${Number.isFinite(requestedFps) ? requestedFps.toFixed(1) : "--"} / actual ${Number.isFinite(actualFps) ? actualFps.toFixed(1) : "--"}`;
+      el("spectrometerStatus").textContent = `${snapshot.spectrometerConfigurationStatus || "unknown"} / ws ${snapshot.websocketConnectionStatus || "unknown"}`;
+      const snapshotNoiseFloor = Number(snapshot.noiseFloorDb);
+      const hasSnapshotNoiseFloor = Number.isFinite(snapshotNoiseFloor);
+      state.latestNoiseFloorDb = hasSnapshotNoiseFloor ? snapshotNoiseFloor : state.latestNoiseFloorDb;
+      el("noiseFloor").textContent = hasSnapshotNoiseFloor ? `${snapshotNoiseFloor.toFixed(1)} dB` : "-- dB";
+      el("foundCount").textContent = `${(snapshot.confirmedSignals || []).length} confirmed`;
+    }
+
+    function renderDecoderStats(snapshot) {
+      const decoder = snapshot.decoderStatus || {};
+      setStatLabels(["Decoded format", "Frame FPS", "Sync state", "IQ sample rate", "Configured IQ", "Frame sync"]);
+      el("phaseLabel").textContent = "Decoder state";
+      el("noiseFloor").textContent = formatDecoderFormat(decoder.decodedFormat);
+      const frameFps = Number(decoder.frameRateFps);
+      el("fftFrames").textContent = Number.isFinite(frameFps) ? `${frameFps.toFixed(2)} fps` : "-- fps";
+      const syncText = decoder.syncLocked === true ? "locked" : decoder.syncLocked === false ? "searching" : "unknown";
+      const syncScore = Number(decoder.syncScore);
+      el("retuneLatency").textContent = Number.isFinite(syncScore) ? `${syncText} ${syncScore.toFixed(2)}` : syncText;
+      el("foundCount").textContent = formatHzRate(decoder.measuredIqSampleRateHz);
+      el("waterfallFpsStatus").textContent = formatHzRate(decoder.configuredIqSampleRateHz);
+      const edgeCount = Number(decoder.frameSyncEdges);
+      const lineStability = Number(decoder.lineStabilityScore);
+      el("spectrometerStatus").textContent = `${Number.isFinite(edgeCount) ? edgeCount : "--"} edges / line ${Number.isFinite(lineStability) ? lineStability.toFixed(2) : "--"}`;
+    }
+
     function applySnapshot(snapshot) {
       if (!snapshot || snapshot.schemaVersion !== 1) return;
       const operatingMode = String(snapshot.operatingMode || "IDLE");
@@ -2481,23 +2833,29 @@
       el("scannerPhaseDetail").textContent = snapshot.activeScanRange || "scanner idle";
       el("statusText").textContent = operatingMode === "VIDEO_DECODE" ? "VIDEO_DECODE" : scannerState;
       const stats = snapshot.statistics || {};
-      el("fftFrames").textContent = `${stats.receivedFftFrames ?? 0} rx`;
       el("fftSequence").textContent = `#${stats.receivedFftFrames ?? 0}`;
-      el("retuneLatency").textContent = `${Number(snapshot.retuneLatencyMs ?? stats.averageRetuneLatencyMs ?? 0).toFixed(1)} ms`;
-      const requestedFps = Number(snapshot.requestedWaterfallFrameRateFps);
-      const actualFps = Number(snapshot.actualWaterfallFrameRateFps);
-      el("waterfallFpsStatus").textContent = `req ${Number.isFinite(requestedFps) ? requestedFps.toFixed(1) : "--"} / actual ${Number.isFinite(actualFps) ? actualFps.toFixed(1) : "--"}`;
-      el("spectrometerStatus").textContent = `${snapshot.spectrometerConfigurationStatus || "unknown"} / ws ${snapshot.websocketConnectionStatus || "unknown"}`;
-      const snapshotNoiseFloor = Number(snapshot.noiseFloorDb);
-      const hasSnapshotNoiseFloor = Number.isFinite(snapshotNoiseFloor);
-      state.latestNoiseFloorDb = hasSnapshotNoiseFloor ? snapshotNoiseFloor : state.latestNoiseFloorDb;
-      el("noiseFloor").textContent = hasSnapshotNoiseFloor ? `${snapshotNoiseFloor.toFixed(1)} dB` : "-- dB";
+      if (operatingMode === "VIDEO_DECODE" && state.dashboardView === "engineering") {
+        renderDecoderStats(snapshot);
+      } else {
+        renderScannerStats(snapshot, stats);
+      }
       el("wsLatency").textContent = `${stats.websocketReconnects ?? 0} reconnects`;
       if (snapshot.latestInitializationError && snapshot.latestInitializationError !== state.latestInitializationError) {
         state.latestInitializationError = snapshot.latestInitializationError;
         appendLog("error", `Scanner configuration error: ${snapshot.latestInitializationError}`);
       } else if (!snapshot.latestInitializationError) {
         state.latestInitializationError = null;
+      }
+      if (snapshot.iqConfig) {
+        if (snapshot.iqConfigDefaults) state.iqConfigDefaults = normalizeIqConfig(snapshot.iqConfigDefaults);
+        state.iqConfig = normalizeIqConfig(snapshot.iqConfig);
+        const iqStatus = String(snapshot.iqConfigurationStatus || "Android owned").toUpperCase();
+        el("iqSettingsStatus").textContent = iqStatus.length > 22 ? `${iqStatus.slice(0, 21)}...` : iqStatus;
+        const iqRejected = String(snapshot.iqConfigurationStatus || "").startsWith("rejected:");
+        if (snapshot.iqConfigurationErrors) showIqConfigErrors(snapshot.iqConfigurationErrors);
+        if (!iqRejected) {
+          populateIqConfigControls(state.iqConfig, true);
+        }
       }
       signals = (snapshot.confirmedSignals || []).map(signalFromSnapshotRecord);
       if (signals.length && !signals.some(signal => signal.id === state.selectedSignal)) state.selectedSignal = signals[0].id;
@@ -2573,6 +2931,26 @@
     });
     el("spectrumViewButton").addEventListener("click", () => demoMode ? setViewMode("spectrum", true) : callAndroid("showSpectrum"));
     el("videoViewButton").addEventListener("click", () => demoMode ? setViewMode("video", true) : callAndroid("showVideo"));
+    el("playIqFile").addEventListener("click", () => {
+      if (demoMode) {
+        toast("IQ replay is available on Android");
+        return;
+      }
+      if (callAndroid("playIqFile")) {
+        closeMainMenu();
+        toast("Select .cs8/.cs16 and matching .json");
+      }
+    });
+    el("decodeIqFile").addEventListener("click", () => {
+      if (demoMode) {
+        toast("IQ frame decode is available on Android");
+        return;
+      }
+      if (callAndroid("decodeIqFile")) {
+        closeMainMenu();
+        toast("Select .cs8/.cs16 and matching .json");
+      }
+    });
     el("signalFilter").addEventListener("change", event => { state.filter = event.target.value; renderSignals(); });
     el("exportButton").addEventListener("click", exportCsv);
     ["spectrumScaleMode", "spectrumSmoothing", "spectrumYMin", "spectrumYMax"].forEach(id => {
@@ -2589,6 +2967,7 @@
       applySpectrumDisplaySettings({ ...SPECTRUM_DEFAULT_DISPLAY });
       toast("Spectrum display reset");
     });
+    el("resetSpectrumDisplay").addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); });
     SCAN_SETTING_IDS.forEach(id => {
       el(id).addEventListener("change", event => {
         persistScanSettings();
@@ -2597,11 +2976,48 @@
         if (id === "threshold") redrawCurrentSpectrum();
       });
     });
+    IQ_FIELD_IDS.forEach(id => {
+      const input = el(id);
+      if (!input) return;
+      input.addEventListener("change", () => {
+        state.iqDraftDirty = true;
+        el("iqSettingsStatus").textContent = "DRAFT";
+      });
+      input.addEventListener("input", () => {
+        state.iqDraftDirty = true;
+        el("iqSettingsStatus").textContent = "DRAFT";
+      });
+    });
+    document.querySelectorAll("input[name='iqSource'], input[name='iqSampleFormat']").forEach(input => {
+      input.addEventListener("change", () => {
+        state.iqDraftDirty = true;
+        el("iqSettingsStatus").textContent = "DRAFT";
+      });
+    });
     el("resetSettings").addEventListener("click", () => {
       const defaults = { sampleRate: "30.72 MSPS", rfBandwidth: "18 MHz", frequencyStep: "15 MHz", usableSpan: "15 MHz", waterfallFrameRate: 10, loSettling: 5, discardFrames: 2, fastMeasurement: 10, dwellTime: 18, retuneTimeout: 500, candidateMeasurement: 75, revisitCount: 3, positiveRevisits: 2, fpvTolerance: 2.0, threshold: 9 };
       Object.entries(defaults).forEach(([id, value]) => { el(id).value = value; });
       persistScanSettings();
       appendLog("system", "Maia scan profile повернуто до типових значень"); toast("Типовий профіль відновлено");
+    });
+    el("resetSettings").addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); });
+    el("applyIqConfig").addEventListener("click", () => {
+      clearIqConfigErrors();
+      const sent = demoMode ? true : callAndroid("applyIqConfig", iqConfigJsonFromInputs());
+      if (sent) {
+        appendLog("system", "Pluto IQ setup submitted to Android for validation");
+        toast("IQ setup submitted");
+      }
+    });
+    el("resetIqConfig").addEventListener("click", () => {
+      populateIqConfigControls(state.iqConfigDefaults || DEFAULT_IQ_CONFIG, false);
+      state.iqDraftDirty = true;
+      el("iqSettingsStatus").textContent = "DEFAULT DRAFT";
+      toast("IQ defaults loaded");
+    });
+    el("cancelIqConfig").addEventListener("click", () => {
+      populateIqConfigControls(state.iqConfig || DEFAULT_IQ_CONFIG, true);
+      closeMainMenu();
     });
     el("applyScanConfig").addEventListener("click", () => {
       persistScanSettings();
@@ -2659,6 +3075,7 @@
 
     bindSignalTable();
     loadScanSettings();
+    populateIqConfigControls(DEFAULT_IQ_CONFIG, true);
     state.spectrumDisplay = storedSpectrumDisplaySettings();
     updateSpectrumDisplayControls();
     setDashboardView(storedDashboardView(), false);

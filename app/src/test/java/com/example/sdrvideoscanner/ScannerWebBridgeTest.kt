@@ -59,6 +59,91 @@ class ScannerWebBridgeTest {
     }
 
     @Test
+    fun iqConfigValidationAcceptsLegacyDialogFields() {
+        val validated = ScannerWebCommandValidator.validateIqConfig(
+            """
+            {
+              "iqSource": "websocket",
+              "maiaHost": "192.168.2.1",
+              "maiaPort": 80,
+              "plutoWebSocketPath": "/iq",
+              "plutoWebSocketReceiveBufferMs": 120,
+              "sampleFormat": "CS8",
+              "sampleRateHz": 25000000,
+              "centerFrequencyHz": 5885000000,
+              "rfBandwidthHz": 20000000,
+              "gainDb": 46.0,
+              "captureDurationSec": 3.0,
+              "loOffsetHz": 0,
+              "hardwareIqCorrection": true,
+              "hardwareBbdcCorrection": true,
+              "hardwareRfdcCorrection": true
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("websocket", validated.iqSource)
+        assertEquals("192.168.2.1", validated.maiaHost)
+        assertEquals(80, validated.maiaPort)
+        assertEquals("/iq", validated.plutoWebSocketPath)
+        assertEquals(120, validated.plutoWebSocketReceiveBufferMs)
+        assertEquals("CS8", validated.sampleFormat)
+        assertEquals(25_000_000L, validated.sampleRateHz)
+        assertEquals(5_885_000_000L, validated.centerFrequencyHz)
+        assertEquals(20_000_000L, validated.rfBandwidthHz)
+        assertEquals(46.0, validated.gainDb, 0.0001)
+        assertEquals(3.0, validated.captureDurationSec, 0.0001)
+        assertTrue(validated.hardwareIqCorrection)
+        assertTrue(validated.hardwareBbdcCorrection)
+        assertTrue(validated.hardwareRfdcCorrection)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun iqConfigValidationRejectsHostWithScheme() {
+        ScannerWebCommandValidator.validateIqConfig(
+            """
+            {
+              "iqSource": "iio",
+              "maiaHost": "ws://192.168.2.1",
+              "maiaPort": 80,
+              "plutoWebSocketPath": "/iq",
+              "sampleFormat": "CS16"
+            }
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun iqConfigValidationReturnsFieldErrorsForInvalidNumericValues() {
+        val error = runCatching {
+            ScannerWebCommandValidator.validateIqConfig(
+                """
+                {
+                  "iqSource": "websocket",
+                  "maiaHost": "192.168.2.1",
+                  "maiaPort": 80,
+                  "plutoWebSocketPath": "/iq",
+                  "plutoWebSocketReceiveBufferMs": 20,
+                  "sampleFormat": "CS8",
+                  "sampleRateHz": 0,
+                  "centerFrequencyHz": 5885000000,
+                  "rfBandwidthHz": 20000000,
+                  "gainDb": "not-a-number",
+                  "captureDurationSec": -1,
+                  "loOffsetHz": 0
+                }
+                """.trimIndent(),
+            )
+        }.exceptionOrNull() as ScannerWebValidationException
+
+        assertEquals("IQ settings contain invalid values", error.errors.message)
+        assertTrue(error.errors.fieldErrors.containsKey("plutoWebSocketReceiveBufferMs"))
+        assertTrue(error.errors.fieldErrors.containsKey("sampleRateHz"))
+        assertTrue(error.errors.fieldErrors.containsKey("gainDb"))
+        assertTrue(error.errors.fieldErrors.containsKey("captureDurationSec"))
+    }
+
+    @Test
     fun retuneTimeoutValidationUsesWaterfallFrameRateAndSafetyMargin() {
         val sevenFps = MaiaScanConfig(
             waterfallFrameRateFps = 7.0,
@@ -126,6 +211,106 @@ class ScannerWebBridgeTest {
         assertEquals(5_805_400_000L, signal.getLong("measuredFrequencyHz"))
         assertEquals(-600_000L, signal.getLong("frequencyOffsetHz"))
         assertEquals("ANALOG", signal.getString("signalType"))
+    }
+
+    @Test
+    fun snapshotSerializationContainsIqConfig() {
+        val snapshot = ScannerWebSnapshot(
+            scannerState = MaiaScannerState.STOPPED.name,
+            operatingMode = SdrOperatingMode.IDLE.name,
+            activeScanRange = null,
+            currentLoFrequencyHz = 5_885_000_000L,
+            scanWindowIndex = 0,
+            scanWindowTotal = 0,
+            statistics = ScannerStatistics(),
+            noiseFloorDb = null,
+            retuneLatencyMs = null,
+            confirmedSignals = emptyList(),
+            iqConfig = ScannerWebIqConfig(
+                iqSource = "iio",
+                maiaHost = "192.168.2.1",
+                maiaPort = 80,
+                plutoWebSocketPath = "/iq",
+                plutoWebSocketReceiveBufferMs = 120,
+                sampleFormat = "CS16",
+                sampleRateHz = 25_000_000L,
+                centerFrequencyHz = 5_885_000_000L,
+                rfBandwidthHz = 20_000_000L,
+                gainDb = 46.0,
+                captureDurationSec = 3.0,
+                loOffsetHz = 0L,
+                hardwareIqCorrection = true,
+                hardwareBbdcCorrection = true,
+                hardwareRfdcCorrection = true,
+            ),
+            iqConfigDefaults = ScannerWebIqConfig(
+                iqSource = "websocket",
+                maiaHost = "192.168.2.1",
+                maiaPort = 80,
+                plutoWebSocketPath = "/iq",
+                plutoWebSocketReceiveBufferMs = 120,
+                sampleFormat = "CS8",
+                sampleRateHz = 25_000_000L,
+                centerFrequencyHz = 5_885_000_000L,
+                rfBandwidthHz = 20_000_000L,
+                gainDb = 46.0,
+                captureDurationSec = 3.0,
+                loOffsetHz = 10L,
+                hardwareIqCorrection = true,
+                hardwareBbdcCorrection = true,
+                hardwareRfdcCorrection = true,
+            ),
+            iqConfigurationStatus = "saved: next session",
+            iqConfigurationErrors = ScannerWebFieldErrors(
+                message = "test",
+                fieldErrors = mapOf("maiaHost" to "bad host"),
+            ),
+        ).toJson()
+
+        val iqConfig = snapshot.getJSONObject("iqConfig")
+        assertEquals("iio", iqConfig.getString("iqSource"))
+        assertEquals("CS16", iqConfig.getString("sampleFormat"))
+        assertEquals(25_000_000L, iqConfig.getLong("sampleRateHz"))
+        assertEquals(5_885_000_000L, iqConfig.getLong("actualLoFrequencyHz"))
+        assertEquals(5_885_000_010L, snapshot.getJSONObject("iqConfigDefaults").getLong("actualLoFrequencyHz"))
+        assertEquals("saved: next session", snapshot.getString("iqConfigurationStatus"))
+        assertEquals("bad host", snapshot.getJSONObject("iqConfigurationErrors").getJSONObject("fieldErrors").getString("maiaHost"))
+    }
+
+    @Test
+    fun snapshotSerializationContainsDecoderStatus() {
+        val snapshot = ScannerWebSnapshot(
+            scannerState = "VIDEO_DECODE",
+            operatingMode = SdrOperatingMode.VIDEO_DECODE.name,
+            activeScanRange = "band_5g8",
+            currentLoFrequencyHz = 5_887_300_000L,
+            scanWindowIndex = 0,
+            scanWindowTotal = 0,
+            statistics = ScannerStatistics(),
+            noiseFloorDb = null,
+            retuneLatencyMs = null,
+            confirmedSignals = emptyList(),
+            decoderStatus = ScannerWebDecoderStatus(
+                decodedFormat = "PAL",
+                frameRateFps = 25.0,
+                syncLocked = true,
+                syncScore = 0.87,
+                lineStabilityScore = 0.91,
+                frameSyncEdges = 2,
+                configuredIqSampleRateHz = 10_000_000L,
+                measuredIqSampleRateHz = 9_980_000L,
+                sourceSampleRateHz = 10_000_000L,
+                frameIndex = 12L,
+                diagnostic = "selected standard: PAL625_25FPS",
+            ),
+        ).toJson()
+
+        val decoder = snapshot.getJSONObject("decoderStatus")
+        assertEquals("PAL", decoder.getString("decodedFormat"))
+        assertEquals(25.0, decoder.getDouble("frameRateFps"), 0.0001)
+        assertTrue(decoder.getBoolean("syncLocked"))
+        assertEquals(9_980_000L, decoder.getLong("measuredIqSampleRateHz"))
+        assertEquals(12L, decoder.getLong("frameIndex"))
     }
 
     @Test

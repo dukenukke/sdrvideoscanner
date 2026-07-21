@@ -36,6 +36,11 @@ data class ScannerWebSnapshot(
     val effectiveRetuneTimeoutMs: Long? = null,
     val staleFramesToDiscard: Int? = null,
     val latestInitializationError: String? = null,
+    val iqConfig: ScannerWebIqConfig? = null,
+    val iqConfigDefaults: ScannerWebIqConfig? = null,
+    val iqConfigurationStatus: String? = null,
+    val iqConfigurationErrors: ScannerWebFieldErrors? = null,
+    val decoderStatus: ScannerWebDecoderStatus? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("schemaVersion", SCHEMA_VERSION)
@@ -65,16 +70,99 @@ data class ScannerWebSnapshot(
         .put("effectiveRetuneTimeoutMs", effectiveRetuneTimeoutMs)
         .put("staleFramesToDiscard", staleFramesToDiscard)
         .put("latestInitializationError", latestInitializationError)
+        .put("iqConfig", iqConfig?.toJson())
+        .put("iqConfigDefaults", iqConfigDefaults?.toJson())
+        .put("iqConfigurationStatus", iqConfigurationStatus)
+        .put("iqConfigurationErrors", iqConfigurationErrors?.toJson())
+        .put("decoderStatus", decoderStatus?.toJson())
 
     companion object {
         const val SCHEMA_VERSION = 1
     }
 }
 
+data class ScannerWebDecoderStatus(
+    val decodedFormat: String?,
+    val frameRateFps: Double?,
+    val syncLocked: Boolean?,
+    val syncScore: Double?,
+    val lineStabilityScore: Double?,
+    val frameSyncEdges: Int?,
+    val configuredIqSampleRateHz: Long?,
+    val measuredIqSampleRateHz: Long?,
+    val sourceSampleRateHz: Long?,
+    val frameIndex: Long,
+    val diagnostic: String?,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("decodedFormat", decodedFormat)
+        .put("frameRateFps", frameRateFps)
+        .put("syncLocked", syncLocked)
+        .put("syncScore", syncScore)
+        .put("lineStabilityScore", lineStabilityScore)
+        .put("frameSyncEdges", frameSyncEdges)
+        .put("configuredIqSampleRateHz", configuredIqSampleRateHz)
+        .put("measuredIqSampleRateHz", measuredIqSampleRateHz)
+        .put("sourceSampleRateHz", sourceSampleRateHz)
+        .put("frameIndex", frameIndex)
+        .put("diagnostic", diagnostic)
+}
+
 data class ValidatedScanCommandConfig(
     val config: MaiaScanConfig,
     val ranges: List<ScanRange>?,
 )
+
+data class ScannerWebIqConfig(
+    val iqSource: String,
+    val maiaHost: String,
+    val maiaPort: Int,
+    val plutoWebSocketPath: String,
+    val plutoWebSocketReceiveBufferMs: Int,
+    val sampleFormat: String,
+    val sampleRateHz: Long,
+    val centerFrequencyHz: Long,
+    val rfBandwidthHz: Long,
+    val gainDb: Double,
+    val captureDurationSec: Double,
+    val loOffsetHz: Long,
+    val hardwareIqCorrection: Boolean,
+    val hardwareBbdcCorrection: Boolean,
+    val hardwareRfdcCorrection: Boolean,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("iqSource", iqSource)
+        .put("maiaHost", maiaHost)
+        .put("maiaPort", maiaPort)
+        .put("plutoWebSocketPath", plutoWebSocketPath)
+        .put("plutoWebSocketReceiveBufferMs", plutoWebSocketReceiveBufferMs)
+        .put("sampleFormat", sampleFormat)
+        .put("sampleRateHz", sampleRateHz)
+        .put("centerFrequencyHz", centerFrequencyHz)
+        .put("rfBandwidthHz", rfBandwidthHz)
+        .put("gainDb", gainDb)
+        .put("captureDurationSec", captureDurationSec)
+        .put("loOffsetHz", loOffsetHz)
+        .put("actualLoFrequencyHz", centerFrequencyHz + loOffsetHz)
+        .put("hardwareIqCorrection", hardwareIqCorrection)
+        .put("hardwareBbdcCorrection", hardwareBbdcCorrection)
+        .put("hardwareRfdcCorrection", hardwareRfdcCorrection)
+}
+
+data class ScannerWebFieldErrors(
+    val message: String,
+    val fieldErrors: Map<String, String>,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("message", message)
+        .put("fieldErrors", JSONObject().also { json ->
+            fieldErrors.forEach { (field, error) -> json.put(field, error) }
+        })
+}
+
+class ScannerWebValidationException(
+    val errors: ScannerWebFieldErrors,
+) : IllegalArgumentException(errors.message)
 
 object ScannerWebCommandValidator {
     fun parseSignalId(value: String?): Long? {
@@ -144,6 +232,115 @@ object ScannerWebCommandValidator {
         MaiaScanTiming.validateRetuneTimeout(config)
         val ranges = json.optJSONArray("ranges")?.let { parseRanges(it) }
         return ValidatedScanCommandConfig(config, ranges)
+    }
+
+    fun validateIqConfig(jsonText: String): ScannerWebIqConfig {
+        val json = JSONObject(jsonText.ifBlank { "{}" })
+        val errors = linkedMapOf<String, String>()
+        fun fieldError(field: String, message: String) {
+            errors.putIfAbsent(field, message)
+        }
+
+        val iqSource = json.stringValue("iqSource")
+            ?.lowercase()
+            ?.takeIf { it == "iio" || it == "websocket" }
+            ?: run {
+                fieldError("iqSource", "IQ source must be IIO or WebSocket")
+                "websocket"
+            }
+        val sampleFormat = json.stringValue("sampleFormat")
+            ?.uppercase()
+            ?.takeIf { it == "CS16" || it == "CS8" }
+            ?: run {
+                fieldError("sampleFormat", "IQ sample format must be CS16 or CS8")
+                "CS8"
+            }
+        val host = json.stringValue("maiaHost")
+            ?.takeIf { it.isNotBlank() && !it.contains("://") && !it.contains("/") && !it.contains(":") }
+            ?: run {
+                fieldError("maiaHost", "Enter only the host name or IP address")
+                ""
+            }
+        val path = json.stringValue("plutoWebSocketPath")
+            ?.takeIf { it.startsWith("/") && !it.contains(" ") && !it.contains("://") }
+            ?: run {
+                fieldError("plutoWebSocketPath", "Enter only the path, for example /iq")
+                ""
+            }
+        val port = json.intValue("maiaPort")
+            ?.takeIf { it in 1..65535 }
+            ?: run {
+                fieldError("maiaPort", "Maia HTTPD IQ WebSocket port must be between 1 and 65535")
+                0
+            }
+        val receiveBufferMs = json.intValue("plutoWebSocketReceiveBufferMs")
+            ?.takeIf { it in 50..150 }
+            ?: run {
+                fieldError("plutoWebSocketReceiveBufferMs", "Maia IQ WebSocket receive buffer must be between 50 and 150 ms")
+                0
+            }
+        val sampleRateHz = json.longValue("sampleRateHz")
+            ?.takeIf { it > 0L }
+            ?: run {
+                fieldError("sampleRateHz", "Sample rate must be a positive integer")
+                0L
+            }
+        val centerFrequencyHz = json.longValue("centerFrequencyHz")
+            ?.takeIf { it > 0L }
+            ?: run {
+                fieldError("centerFrequencyHz", "Center frequency must be a positive integer")
+                0L
+            }
+        val rfBandwidthHz = json.longValue("rfBandwidthHz")
+            ?.takeIf { it > 0L }
+            ?: run {
+                fieldError("rfBandwidthHz", "RF bandwidth must be a positive integer")
+                0L
+            }
+        val gainDb = json.doubleValue("gainDb")
+            ?.takeIf { it.isFinite() }
+            ?: run {
+                fieldError("gainDb", "Gain must be a valid number")
+                0.0
+            }
+        val captureDurationSec = json.doubleValue("captureDurationSec")
+            ?.takeIf { it.isFinite() && it > 0.0 }
+            ?: run {
+                fieldError("captureDurationSec", "Capture duration must be positive")
+                0.0
+            }
+        val loOffsetHz = json.longValue("loOffsetHz")
+            ?: run {
+                fieldError("loOffsetHz", "LO offset must be an integer")
+                0L
+            }
+
+        if (errors.isNotEmpty()) {
+            throw ScannerWebValidationException(
+                ScannerWebFieldErrors(
+                    message = "IQ settings contain invalid values",
+                    fieldErrors = errors,
+                ),
+            )
+        }
+
+        return ScannerWebIqConfig(
+            iqSource = iqSource,
+            maiaHost = host,
+            maiaPort = port,
+            plutoWebSocketPath = path,
+            plutoWebSocketReceiveBufferMs = receiveBufferMs,
+            sampleFormat = sampleFormat,
+            sampleRateHz = sampleRateHz,
+            centerFrequencyHz = centerFrequencyHz,
+            rfBandwidthHz = rfBandwidthHz,
+            gainDb = gainDb,
+            captureDurationSec = captureDurationSec,
+            loOffsetHz = loOffsetHz,
+            hardwareIqCorrection = json.optBoolean("hardwareIqCorrection", true),
+            hardwareBbdcCorrection = json.optBoolean("hardwareBbdcCorrection", true),
+            hardwareRfdcCorrection = json.optBoolean("hardwareRfdcCorrection", true),
+        )
     }
 
     private fun parseRanges(array: JSONArray): List<ScanRange> {
@@ -273,4 +470,43 @@ private fun JSONObject.optDoubleInRange(key: String, defaultValue: Double, min: 
     val value = if (has(key) && !isNull(key)) optDouble(key) else defaultValue
     require(value.isFinite() && value in min..max) { "$key out of range" }
     return value
+}
+
+private fun JSONObject.optRequiredString(key: String): String {
+    val value = optString(key).trim()
+    require(value.isNotBlank()) { "$key is required" }
+    return value
+}
+
+private fun JSONObject.optRequiredChoice(key: String, allowed: Set<String>): String {
+    val value = optRequiredString(key)
+    return allowed.firstOrNull { it.equals(value, ignoreCase = true) }
+        ?: throw IllegalArgumentException("$key has unsupported value")
+}
+
+private fun JSONObject.stringValue(key: String): String? {
+    return if (has(key) && !isNull(key)) optString(key).trim() else null
+}
+
+private fun JSONObject.longValue(key: String): Long? {
+    if (!has(key) || isNull(key)) return null
+    return when (val value = opt(key)) {
+        is Number -> value.toLong()
+        is String -> value.trim().replace("_", "").replace(",", "").toLongOrNull()
+        else -> null
+    }
+}
+
+private fun JSONObject.intValue(key: String): Int? {
+    val value = longValue(key) ?: return null
+    return value.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt()
+}
+
+private fun JSONObject.doubleValue(key: String): Double? {
+    if (!has(key) || isNull(key)) return null
+    return when (val value = opt(key)) {
+        is Number -> value.toDouble()
+        is String -> value.trim().replace("_", "").replace(",", "").toDoubleOrNull()
+        else -> null
+    }
 }
