@@ -1,5 +1,7 @@
 #include <jni.h>
 
+#include <android/log.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -47,6 +49,7 @@ constexpr std::uint64_t kWebSocketCs8PlaybackAnalysisRateHz = 10000000;
 constexpr double kDefaultPlaybackVideoCutoffHz = 5000000.0;
 constexpr double kWebSocketCs8PlaybackVideoCutoffHz = 2200000.0;
 constexpr double kCs16FullScale = 32768.0;
+constexpr const char* kNativeLogTag = "SDRVideoScanner.Native";
 
 std::mutex gLastNativeErrorMutex;
 std::string gLastNativeError;
@@ -61,6 +64,10 @@ std::string consumeLastNativeError() {
     auto message = gLastNativeError;
     gLastNativeError.clear();
     return message;
+}
+
+void nativeLogInfo(const std::string& message) {
+    __android_log_print(ANDROID_LOG_INFO, kNativeLogTag, "%s", message.c_str());
 }
 
 struct AnalogPlaybackSession {
@@ -812,8 +819,8 @@ sdr::AnalogVideoDecoderConfig makePlaybackDecoderConfig(
             ? kLivePlaybackReadBlockSamples
             : kFilePlaybackReadBlockSamples;
     config.fastFieldPreview = true;
-    config.detectFrameSyncInFastPreview = true;
-    config.fastPreviewFieldStride = 2U;
+    config.detectFrameSyncInFastPreview = sessionKind != "file";
+    config.fastPreviewFieldStride = sessionKind == "file" ? 1U : 2U;
     config.liveFrameReadMultiplier = 1.0;
     config.timing = sdr::timingForStandard(standard);
     if (playbackFrameRateHz > 0.0) {
@@ -993,6 +1000,12 @@ sdr::VideoStandard choosePlaybackStandard(
             : sdr::VideoStandard::PAL625_25FPS;
 }
 
+sdr::VideoStandard filePlaybackStandardOrDefault(sdr::VideoStandard requestedStandard) {
+    return requestedStandard == sdr::VideoStandard::AUTO
+            ? sdr::VideoStandard::NTSC_525_30FPS
+            : requestedStandard;
+}
+
 AnalogPlaybackSession* createAnalogPlaybackSession(
         const std::string& filePath,
         bool hasSampleRateHz,
@@ -1000,6 +1013,7 @@ AnalogPlaybackSession* createAnalogPlaybackSession(
         sdr::SampleEncoding sampleEncoding,
         sdr::VideoStandard requestedStandard) {
     if (!hasSampleRateHz || sampleRateHz == 0) {
+        setLastNativeError("file playback requires sample_rate_hz metadata");
         return nullptr;
     }
 
@@ -1012,7 +1026,7 @@ AnalogPlaybackSession* createAnalogPlaybackSession(
 
     auto session = std::make_unique<AnalogPlaybackSession>();
     session->sampleRateHz = sampleRateHz;
-    session->standard = choosePlaybackStandard(filePath, sampleRateHz, sampleEncoding, requestedStandard);
+    session->standard = filePlaybackStandardOrDefault(requestedStandard);
     session->playbackFrameRateHz = playbackFrameRateForStandard(session->standard);
     session->totalSampleCount = fileSizeBytes(filePath) / bytesPerIqSample(sampleEncoding);
     session->loopAtEndOfStream = true;
@@ -1021,6 +1035,7 @@ AnalogPlaybackSession* createAnalogPlaybackSession(
 
     const auto openStatus = session->source->open();
     if (!openStatus.ok()) {
+        setLastNativeError(openStatus.message);
         return nullptr;
     }
 
@@ -1486,7 +1501,24 @@ sdr::SpectrumStats readNextSpectrumStats(SpectrumViewSession& session, bool& ok)
 }
 
 sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
+    const bool shouldLogFilePlayback =
+            session.sessionKind == "file" &&
+            (session.frameIndex < 3 || session.frameIndex % 60 == 0);
+    if (shouldLogFilePlayback) {
+        auto logPrefix = std::ostringstream{};
+        logPrefix << "decodeNextPlaybackFrame start kind=" << session.sessionKind
+                  << " frameIndex=" << session.frameIndex
+                  << " sampleRateHz=" << session.sampleRateHz;
+        nativeLogInfo(logPrefix.str());
+    }
     auto frame = session.decoder->decodeOneFrame(*session.source);
+    if (shouldLogFilePlayback) {
+        auto logAfterDecode = std::ostringstream{};
+        logAfterDecode << "decodeNextPlaybackFrame after decode valid=" << (frame.valid() ? "yes" : "no")
+                       << " kind=" << session.sessionKind
+                       << " frameIndex=" << session.frameIndex;
+        nativeLogInfo(logAfterDecode.str());
+    }
     if (!frame.valid() && session.loopAtEndOfStream) {
         auto* fileSource = dynamic_cast<sdr::FileSource*>(session.source.get());
         const auto seekStatus = fileSource != nullptr
@@ -1494,7 +1526,14 @@ sdr::VideoFrame decodeNextPlaybackFrame(AnalogPlaybackSession& session) {
                 : sdr::SourceStatus{sdr::SampleSourceError::InvalidArgument, "playback source is not seekable"};
         session.frameIndex = 0;
         if (seekStatus.ok()) {
+            if (shouldLogFilePlayback) {
+                nativeLogInfo("decodeNextPlaybackFrame retrying from start after invalid/EOF frame");
+            }
             frame = session.decoder->decodeOneFrame(*session.source);
+            if (shouldLogFilePlayback) {
+                nativeLogInfo(std::string("decodeNextPlaybackFrame after retry valid=") +
+                              (frame.valid() ? "yes" : "no"));
+            }
         }
     }
 

@@ -281,6 +281,13 @@ class MainActivity : AppCompatActivity() {
         binding.edgeTimelineView.setTimeline(null)
         renderSignalTable()
         updateScannerUi()
+        handleDebugPlaybackIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDebugPlaybackIntent(intent)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -565,6 +572,28 @@ class MainActivity : AppCompatActivity() {
             }
             MENU_ABOUT -> showAboutDialog()
         }
+    }
+
+    private fun handleDebugPlaybackIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent?.action != DEBUG_ACTION_PLAY_IQ_FILE) {
+            return
+        }
+        val path = intent.getStringExtra(DEBUG_EXTRA_IQ_PATH)
+            ?.takeIf { it.isNotBlank() }
+            ?: defaultIqPathForConfig(plutoIqConfig.forcedSampleFormat(IqSampleFormat.CS8))
+        Log.i(LOG_TAG, "Debug IQ playback requested: path=$path")
+        stopScannerMode()
+        stopSpectrum()
+        stopPlayback()
+        val metadata = loadIqMetadata(path)
+        Log.i(
+            LOG_TAG,
+            "Debug IQ playback metadata: sidecar=${metadata.sidecarPath}, " +
+                "found=${metadata.sidecarFound}, parseError=${metadata.parseError}, " +
+                "format=${metadata.format}, sampleRateHz=${metadata.sampleRateHz}",
+        )
+        activeMode = ActiveMode.FILE_PLAYBACK
+        startPlayback(path, metadata, VideoStandard.AUTO)
     }
 
     private fun openIqReplayFilePicker(action: IqReplayPickerAction) {
@@ -3008,6 +3037,9 @@ class MainActivity : AppCompatActivity() {
             copySiblingFileSidecarIfAvailable(iqDocument.uri, destinationSidecar) -> {
                 "sidecar copied from same filesystem directory"
             }
+            copyDefaultSidecarIfAvailable(iqDocument.displayName, destinationSidecar) -> {
+                "sidecar copied from app replay directory"
+            }
             else -> {
                 "sidecar not copied; select ${iqDocument.stem}.json together with the IQ file if the picker cannot expose sibling files"
             }
@@ -3093,6 +3125,20 @@ class MainActivity : AppCompatActivity() {
         return runCatching {
             destinationSidecar.parentFile?.mkdirs()
             sidecar.copyTo(destinationSidecar, overwrite = true)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun copyDefaultSidecarIfAvailable(iqDisplayName: String, destinationSidecar: File): Boolean {
+        val dotIndex = iqDisplayName.lastIndexOf('.')
+        val stem = if (dotIndex > 0) iqDisplayName.substring(0, dotIndex) else iqDisplayName
+        val defaultSidecar = File(getExternalFilesDir(null), "$stem.json")
+        if (!defaultSidecar.isFile) {
+            return false
+        }
+        return runCatching {
+            destinationSidecar.parentFile?.mkdirs()
+            defaultSidecar.copyTo(destinationSidecar, overwrite = true)
             true
         }.getOrDefault(false)
     }
@@ -3285,6 +3331,14 @@ class MainActivity : AppCompatActivity() {
         frameIndex: Long,
     ) {
         updateCurrentFrequencyLabel(metadata.centerFrequencyHz ?: plutoIqConfig.centerFrequencyHz)
+        val metadataError = playbackMetadataError(metadata)
+        if (metadataError != null) {
+            binding.videoFrameImage.setImageDrawable(null)
+            binding.edgeTimelineView.setTimeline(null)
+            binding.sampleText.text = metadata.toDiagnosticText() +
+                "\n\nAnalog FPV video frame decode failed.\n\n$metadataError"
+            return
+        }
         val frame = decodeFrame(path, metadata, standard, frameIndex)
         if (frame == null) {
             binding.videoFrameImage.setImageDrawable(null)
@@ -3330,10 +3384,37 @@ class MainActivity : AppCompatActivity() {
         stopPlayback()
         activeMode = ActiveMode.FILE_PLAYBACK
         updateCurrentFrequencyLabel(metadata.centerFrequencyHz ?: plutoIqConfig.centerFrequencyHz)
+        val metadataError = playbackMetadataError(metadata)
+        if (metadataError != null) {
+            Log.w(LOG_TAG, "File playback rejected: path=$path, error=$metadataError")
+            binding.videoFrameImage.setImageDrawable(null)
+            binding.edgeTimelineView.setTimeline(null)
+            binding.sampleText.text = metadata.toDiagnosticText() +
+                "\n\nPlayback not started.\n\n$metadataError"
+            return
+        }
+        Log.i(
+            LOG_TAG,
+            "File playback starting: path=$path, format=${metadata.sampleFormat().metadataValue}, " +
+                "sampleRateHz=${metadata.sampleRateHz}, centerFrequencyHz=${metadata.centerFrequencyHz}",
+        )
         val generation = beginPlaybackSession()
         updateSleepBlocker()
         playbackFrameIndex = 0L
         schedulePlaybackFrame(path, metadata, standard, generation)
+    }
+
+    private fun playbackMetadataError(metadata: IQMetadata): String? {
+        if (metadata.parseError != null) {
+            return "Metadata sidecar could not be parsed: ${metadata.parseError}"
+        }
+        if (!metadata.sidecarFound) {
+            return "Missing metadata sidecar. Put ${File(metadata.sidecarPath).name} next to the IQ file, or select it together with the .cs8/.cs16 file."
+        }
+        if (metadata.sampleRateHz == null || metadata.sampleRateHz <= 0L) {
+            return "Metadata sidecar must contain positive sample_rate_hz."
+        }
+        return null
     }
 
     private fun beginPlaybackSession(): Long {
@@ -3433,13 +3514,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 sessionHandle = createPlaybackSession(path, metadata, standard)
                 if (sessionHandle == 0L) {
+                    val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    Log.w(LOG_TAG, "File playback native session creation failed: path=$path, nativeError=$nativeError")
                     mainHandler.post {
                         if (!playbackSessionActive(generation)) {
                             return@post
                         }
                         stopPlayback()
                         binding.sampleText.text = metadata.toDiagnosticText() +
-                            "\n\nPlayback stopped: native playback session could not be created."
+                            "\n\nPlayback stopped: native playback session could not be created.\n\n" +
+                            "native_error: $nativeError"
                     }
                     return@execute
                 }
@@ -3448,6 +3532,7 @@ class MainActivity : AppCompatActivity() {
                     closeAnalogVideoPlaybackSession(sessionHandle)
                     return@execute
                 }
+                Log.i(LOG_TAG, "File playback native session opened: path=$path, handle=$sessionHandle")
                 playbackSessionHandle = sessionHandle
             }
 
@@ -3461,6 +3546,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (frame == null) {
                     val nativeError = consumeLastNativeError().ifBlank { "unavailable" }
+                    Log.w(
+                        LOG_TAG,
+                        "File playback frame decode failed: path=$path, frameIndex=$frameIndex, nativeError=$nativeError",
+                    )
                     if (activeMode.isPlutoPlaybackMode()) {
                         handlePlutoRuntimeFailure(
                             title = "Pluto playback lost connection at frame $frameIndex.",
@@ -5927,6 +6016,8 @@ class MainActivity : AppCompatActivity() {
         fun toDiagnosticText(): String {
             return buildString {
                 append("metadata path: $sidecarPath")
+                append("\nmetadata_sidecar_found: $sidecarFound")
+                parseError?.let { append("\nmetadata_parse_error: $it") }
                 source?.let { append("\nsource: $it") }
                 device?.let { append("\ndevice: $it") }
                 format?.let { append("\nformat: $it") }
@@ -6388,6 +6479,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val LOG_TAG = "SDRVideoScanner.Main"
+        private const val DEBUG_ACTION_PLAY_IQ_FILE = "com.example.sdrvideoscanner.DEBUG_PLAY_IQ_FILE"
+        private const val DEBUG_EXTRA_IQ_PATH = "iqPath"
         private const val FRAME_PACKET_HEADER_BYTES = 12
         private const val PLAYBACK_DELAY_MS = 1L
         private const val PLAYBACK_DIAGNOSTIC_EVERY_FRAMES = 10L
