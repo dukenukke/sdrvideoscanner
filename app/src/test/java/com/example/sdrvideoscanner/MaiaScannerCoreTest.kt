@@ -1,12 +1,15 @@
 package com.example.sdrvideoscanner
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
 
 class MaiaScannerCoreTest {
     @Test
@@ -21,6 +24,22 @@ class MaiaScannerCoreTest {
         windows.zipWithNext().forEach { (left, right) ->
             assertTrue(left.reliableEndFrequencyHz >= right.reliableStartFrequencyHz)
         }
+    }
+
+    @Test
+    fun scanWindowsAreGeneratedFromLowestToHighestFrequencyIgnoringPriority() {
+        val config = MaiaScanConfig(frequencyStepHz = 15_000_000L, usableSpanHz = 15_000_000L)
+        val ranges = listOf(
+            ScanRange("band_5g8", 5_700_000_000L, 5_900_000_000L, enabled = true, rfPathId = "band_5g8", priority = 100),
+            ScanRange("band_1g2", 1_200_000_000L, 1_400_000_000L, enabled = true, rfPathId = "band_1g2", priority = 1),
+            ScanRange("band_3g3", 3_200_000_000L, 3_500_000_000L, enabled = true, rfPathId = "band_3g3", priority = 50),
+        )
+
+        val windows = MaiaScanPlanner.generateWindows(ranges, config)
+        val rangeOrder = windows.map { it.rangeId }.distinct()
+
+        assertEquals(listOf("band_1g2", "band_3g3", "band_5g8"), rangeOrder)
+        assertEquals(windows.map { it.centerFrequencyHz }.sorted(), windows.map { it.centerFrequencyHz })
     }
 
     @Test
@@ -255,7 +274,7 @@ class MaiaScannerCoreTest {
         )
 
         controller.start(
-            MaiaScanConfig(retuneTimeoutMs = 20L, loSettlingMs = 1L, discardedFramesAfterRetune = 0),
+            MaiaScanConfig(retuneTimeoutMs = 1000L, loSettlingMs = 1L, discardedFramesAfterRetune = 0),
             listOf(ScanRange("test", 100_000_000L, 110_000_000L, enabled = true, rfPathId = null)),
         )
         delay(20L)
@@ -263,6 +282,76 @@ class MaiaScannerCoreTest {
         delay(20L)
 
         assertFalse(source.connected)
+    }
+
+    @Test
+    fun scannerConfiguresRadioAndSpectrometerBeforeConnectingWaterfall() = runBlocking {
+        val events = CopyOnWriteArrayList<String>()
+        val states = CopyOnWriteArrayList<MaiaScannerState>()
+        val source = RecordingWaterfallSource(events)
+        val controller = MaiaWaterfallScanController(
+            source = source,
+            tuner = RecordingTuner(events, actualFps = 9.875),
+            clockNs = { System.nanoTime() },
+            onStateChanged = { states += it },
+        )
+
+        controller.start(
+            MaiaScanConfig(retuneTimeoutMs = 1000L, waterfallFrameRateFps = 10.0),
+            listOf(ScanRange("test", 100_000_000L, 110_000_000L, enabled = true, rfPathId = null)),
+        )
+        waitUntil { source.connectCount == 1 }
+        controller.stop()
+        delay(50L)
+
+        assertTrue(events.indexOf("configureForScan") in 0 until events.indexOf("connect"))
+        assertTrue(states.indexOf(MaiaScannerState.CONFIGURING_SPECTROMETER) in 0 until states.indexOf(MaiaScannerState.CONNECTING_WATERFALL))
+    }
+
+    @Test
+    fun scannerDoesNotConnectWaterfallWhenHttpConfigurationFails() = runBlocking {
+        val events = CopyOnWriteArrayList<String>()
+        val states = CopyOnWriteArrayList<MaiaScannerState>()
+        val source = RecordingWaterfallSource(events)
+        val controller = MaiaWaterfallScanController(
+            source = source,
+            tuner = RecordingTuner(events, failConfiguration = true),
+            clockNs = { System.nanoTime() },
+            onStateChanged = { states += it },
+        )
+
+        controller.start(
+            MaiaScanConfig(retuneTimeoutMs = 1000L),
+            listOf(ScanRange("test", 100_000_000L, 110_000_000L, enabled = true, rfPathId = null)),
+        )
+        waitUntil { states.contains(MaiaScannerState.ERROR) }
+        delay(50L)
+
+        assertEquals(0, source.connectCount)
+        assertFalse(source.connected)
+        assertTrue(events.contains("disconnect"))
+    }
+
+    @Test
+    fun repeatedInitializationDoesNotCreateDuplicateWaterfallConnections() = runBlocking {
+        val events = CopyOnWriteArrayList<String>()
+        val source = RecordingWaterfallSource(events)
+        val controller = MaiaWaterfallScanController(
+            source = source,
+            tuner = RecordingTuner(events),
+            clockNs = { System.nanoTime() },
+        )
+        val config = MaiaScanConfig(retuneTimeoutMs = 1000L)
+        val ranges = listOf(ScanRange("test", 100_000_000L, 110_000_000L, enabled = true, rfPathId = null))
+
+        controller.start(config, ranges)
+        waitUntil { source.connectCount == 1 }
+        controller.start(config, ranges)
+        waitUntil { source.connectCount == 2 }
+        controller.stop()
+        delay(50L)
+
+        assertEquals(2, source.connectCount)
     }
 
     private fun frame(centerHz: Long, timestampNs: Long): WaterfallFrame {
@@ -306,5 +395,71 @@ class MaiaScannerCoreTest {
         }
 
         override suspend fun currentFrequencyHz(): Long? = frequencyHz
+    }
+
+    private class RecordingWaterfallSource(
+        private val events: MutableList<String>,
+    ) : WaterfallSource {
+        private val frames = MutableSharedFlow<WaterfallFrame>(extraBufferCapacity = 16)
+        var connected: Boolean = false
+            private set
+        var connectCount: Int = 0
+            private set
+
+        override suspend fun connect() {
+            events += "connect"
+            connectCount += 1
+            connected = true
+        }
+
+        override suspend fun disconnect() {
+            events += "disconnect"
+            connected = false
+        }
+
+        override fun frames(): Flow<WaterfallFrame> = frames
+    }
+
+    private class RecordingTuner(
+        private val events: MutableList<String>,
+        private val actualFps: Double = 10.0,
+        private val failConfiguration: Boolean = false,
+    ) : IRadioTuner {
+        private var frequencyHz: Long? = null
+
+        override suspend fun configure(sampleRateHz: Long, rfBandwidthHz: Long) {
+            events += "configure"
+        }
+
+        override suspend fun configureForScan(config: MaiaScanConfig, initialCenterFrequencyHz: Long): MaiaRadioConfigurationResult {
+            events += "configureForScan"
+            if (failConfiguration) {
+                throw IllegalStateException("configuration failed")
+            }
+            frequencyHz = initialCenterFrequencyHz
+            return MaiaRadioConfigurationResult(
+                requestedWaterfallFrameRateFps = config.waterfallFrameRateFps,
+                actualWaterfallFrameRateFps = actualFps,
+                spectrometerStatus = "accepted",
+            )
+        }
+
+        override suspend fun tune(centerFrequencyHz: Long) {
+            events += "tune"
+            frequencyHz = centerFrequencyHz
+        }
+
+        override suspend fun currentFrequencyHz(): Long? = frequencyHz
+    }
+
+    private suspend fun waitUntil(timeoutMs: Long = 1000L, predicate: () -> Boolean) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000L
+        while (System.nanoTime() < deadline) {
+            if (predicate()) {
+                return
+            }
+            delay(10L)
+        }
+        assertTrue("Timed out waiting for condition", predicate())
     }
 }

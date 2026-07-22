@@ -27,7 +27,11 @@ class ScannerWebBridge(
         fun releaseSignal()
         fun showSpectrum()
         fun showVideo()
+        fun playIqFile()
+        fun decodeIqFile()
         fun applyScanConfig(config: ValidatedScanCommandConfig)
+        fun applyIqConfig(config: ScannerWebIqConfig)
+        fun rejectIqConfig(errors: ScannerWebFieldErrors)
         fun updateNativeVideoRect(rect: NativeVideoRect)
     }
 
@@ -82,11 +86,37 @@ class ScannerWebBridge(
     }
 
     @JavascriptInterface
+    fun playIqFile() {
+        handler.playIqFile()
+    }
+
+    @JavascriptInterface
+    fun decodeIqFile() {
+        handler.decodeIqFile()
+    }
+
+    @JavascriptInterface
     fun applyScanConfig(json: String?) {
         val config = runCatching {
             ScannerWebCommandValidator.validateScanConfig(json.orEmpty())
         }.getOrNull() ?: return
         handler.applyScanConfig(config)
+    }
+
+    @JavascriptInterface
+    fun applyIqConfig(json: String?) {
+        runCatching {
+            ScannerWebCommandValidator.validateIqConfig(json.orEmpty())
+        }.onSuccess { config ->
+            handler.applyIqConfig(config)
+        }.onFailure { error ->
+            val errors = (error as? ScannerWebValidationException)?.errors
+                ?: ScannerWebFieldErrors(
+                    message = error.message ?: "Invalid IQ configuration",
+                    fieldErrors = emptyMap(),
+                )
+            handler.rejectIqConfig(errors)
+        }
     }
 
     @JavascriptInterface

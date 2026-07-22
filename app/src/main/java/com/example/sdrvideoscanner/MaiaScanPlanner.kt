@@ -15,7 +15,7 @@ object MaiaScanPlanner {
 
         return ranges
             .filter { it.enabled }
-            .sortedWith(compareByDescending<ScanRange> { it.priority }.thenBy { it.startFrequencyHz })
+            .sortedWith(compareBy<ScanRange> { it.startFrequencyHz }.thenBy { it.endFrequencyHz }.thenBy { it.id })
             .flatMap { range -> generateRangeWindows(range, config) }
             .distinctBy { it.rangeId to it.centerFrequencyHz }
     }

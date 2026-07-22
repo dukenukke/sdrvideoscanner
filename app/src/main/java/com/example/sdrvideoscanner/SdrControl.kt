@@ -2,6 +2,15 @@ package com.example.sdrvideoscanner
 
 interface IRadioTuner {
     suspend fun configure(sampleRateHz: Long, rfBandwidthHz: Long)
+    suspend fun configureForScan(config: MaiaScanConfig, initialCenterFrequencyHz: Long): MaiaRadioConfigurationResult {
+        configure(config.sampleRateHz, config.rfBandwidthHz)
+        tune(initialCenterFrequencyHz)
+        return MaiaRadioConfigurationResult(
+            requestedWaterfallFrameRateFps = config.waterfallFrameRateFps,
+            actualWaterfallFrameRateFps = config.waterfallFrameRateFps,
+            spectrometerStatus = "not_applicable",
+        )
+    }
     suspend fun tune(centerFrequencyHz: Long)
     suspend fun currentFrequencyHz(): Long?
 }

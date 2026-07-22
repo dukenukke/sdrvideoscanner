@@ -15,7 +15,7 @@ import java.security.SecureRandom
 import java.util.Base64
 
 /**
- * Transport for plutorx_ws:
+ * Transport for Maia HTTPD raw IQ WebSocket:
  * 1. Open ws://host:port/path using the standard WebSocket opening handshake.
  * 2. Read exactly one metadata text frame: {"format":"cs8","channels":"iq","endianness":"iqiq"}.
  * 3. Treat all later binary frame payload bytes as raw signed CS8 IQ: I0, Q0, I1, Q1, ...
@@ -40,6 +40,7 @@ class PlutoWebSocketTransport private constructor(
     private var bytesReceived = 0L
     private var samplesReceived = 0L
     private var statsWindowStartNs = System.nanoTime()
+    private var lastEstimatedSampleRateHz = 0L
 
     @Synchronized
     fun openStream(): String? {
@@ -65,14 +66,14 @@ class PlutoWebSocketTransport private constructor(
             validateMetadata(metadata)?.let { return fail(it) }
 
             lastError = ""
-            Log.i(LOG_TAG, "Opened Pluto WebSocket IQ stream ws://${endpoint()}$path metadata=$metadata network=$network handle=${network.networkHandle}")
+            Log.i(LOG_TAG, "Opened Maia HTTPD IQ WebSocket stream ws://${endpoint()}$path metadata=$metadata network=$network handle=${network.networkHandle}")
             null
         } catch (error: SocketTimeoutException) {
             close()
-            fail("Pluto WebSocket timeout: ${error.message ?: error.javaClass.name}", error)
+            fail("Maia HTTPD IQ WebSocket timeout: ${error.message ?: error.javaClass.name}", error)
         } catch (error: Exception) {
             close()
-            fail("Pluto WebSocket open failed: ${error.message ?: error.javaClass.name}", error)
+            fail("Maia HTTPD IQ WebSocket open failed: ${error.message ?: error.javaClass.name}", error)
         }
     }
 
@@ -82,7 +83,7 @@ class PlutoWebSocketTransport private constructor(
             return 0
         }
         if (input == null || output == null) {
-            lastError = "Pluto WebSocket stream is not open"
+            lastError = "Maia HTTPD IQ WebSocket stream is not open"
             return -1
         }
 
@@ -97,7 +98,7 @@ class PlutoWebSocketTransport private constructor(
                 when (val frame = readFrameInto(destination, copied, maxBytes - copied)) {
                     is WebSocketReadResult.Copied -> copied += frame.byteCount
                     is WebSocketReadResult.Text -> {
-                        Log.i(LOG_TAG, "Ignoring Pluto WebSocket text frame after metadata: ${frame.text.take(TEXT_LOG_LIMIT)}")
+                        Log.i(LOG_TAG, "Ignoring Maia HTTPD IQ WebSocket text frame after metadata: ${frame.text.take(TEXT_LOG_LIMIT)}")
                     }
                     is WebSocketReadResult.Close -> {
                         closeSocketOnly()
@@ -114,13 +115,13 @@ class PlutoWebSocketTransport private constructor(
             if (copied > 0) {
                 copied
             } else {
-                failRead("Pluto WebSocket read timeout: ${error.message ?: error.javaClass.name}", error)
+                failRead("Maia HTTPD IQ WebSocket read timeout: ${error.message ?: error.javaClass.name}", error)
             }
         } catch (error: Exception) {
             if (copied > 0) {
                 copied
             } else {
-                failRead("Pluto WebSocket read failed: ${error.message ?: error.javaClass.name}", error)
+                failRead("Maia HTTPD IQ WebSocket read failed: ${error.message ?: error.javaClass.name}", error)
             }
         }
     }
@@ -142,18 +143,28 @@ class PlutoWebSocketTransport private constructor(
     @Synchronized
     fun lastError(): String = lastError
 
+    @Synchronized
+    fun estimatedSampleRateHz(): Long {
+        val now = System.nanoTime()
+        val elapsedSec = (now - statsWindowStartNs).toDouble() / 1_000_000_000.0
+        if (elapsedSec > 0.2 && samplesReceived > 0L) {
+            return (samplesReceived / elapsedSec).toLong()
+        }
+        return lastEstimatedSampleRateHz
+    }
+
     private fun validateEndpoint(): String? {
         if (host.isBlank()) {
-            return fail("Pluto WebSocket host is empty")
+            return fail("Maia HTTPD IQ WebSocket host is empty")
         }
         if (port !in 1..65535) {
-            return fail("Pluto WebSocket port must be between 1 and 65535")
+            return fail("Maia HTTPD IQ WebSocket port must be between 1 and 65535")
         }
         if (!path.startsWith('/')) {
-            return fail("Pluto WebSocket path must start with /")
+            return fail("Maia HTTPD IQ WebSocket path must start with /")
         }
         if (path.contains('\r') || path.contains('\n') || path.contains(' ') || path.contains("://")) {
-            return fail("Pluto WebSocket path must be a plain absolute path, for example /iq")
+            return fail("Maia HTTPD IQ WebSocket path must be a plain absolute path, for example /iq")
         }
         return null
     }
@@ -206,11 +217,11 @@ class PlutoWebSocketTransport private constructor(
         if (!statusLine.contains(" 101 ")) {
             val targetUrl = "ws://${endpoint()}$path"
             val pathHint = if (statusLine.contains(" 404 ")) {
-                "\nhint: plutorx_ws exposes /iq by default; check the configured path or the server -r path."
+                "\nhint: Tezuka Maia HTTPD exposes raw CS8 IQ at /iq on branch feature/maia_tweaks."
             } else {
                 ""
             }
-            return "Pluto WebSocket upgrade failed: url=$targetUrl status_line=$statusLine$pathHint headers=${response.trim()}"
+            return "Maia HTTPD IQ WebSocket upgrade failed: url=$targetUrl status_line=$statusLine$pathHint headers=${response.trim()}"
         }
         val headers = lines.drop(1)
             .mapNotNull { line ->
@@ -220,12 +231,12 @@ class PlutoWebSocketTransport private constructor(
             .toMap()
         val upgrade = headers["upgrade"].orEmpty()
         if (!upgrade.equals("websocket", ignoreCase = true)) {
-            return "Pluto WebSocket upgrade response did not include Upgrade: websocket; headers=${response.trim()}"
+            return "Maia HTTPD IQ WebSocket upgrade response did not include Upgrade: websocket; headers=${response.trim()}"
         }
         val accept = headers["sec-websocket-accept"].orEmpty()
         val expectedAccept = websocketAccept(key)
         if (accept != expectedAccept) {
-            return "Pluto WebSocket accept mismatch: expected=$expectedAccept actual=$accept"
+            return "Maia HTTPD IQ WebSocket accept mismatch: expected=$expectedAccept actual=$accept"
         }
         return null
     }
@@ -238,12 +249,12 @@ class PlutoWebSocketTransport private constructor(
                 is WebSocketFrame.Pong -> Unit
                 is WebSocketFrame.Close -> {
                     closeSocketOnly()
-                    return fail("Pluto WebSocket closed before metadata frame")
+                    return fail("Maia HTTPD IQ WebSocket closed before metadata frame")
                 }
-                is WebSocketFrame.Binary -> return fail("Pluto WebSocket sent binary data before metadata text frame")
+                is WebSocketFrame.Binary -> return fail("Maia HTTPD IQ WebSocket sent binary data before metadata text frame")
             }
         }
-        return fail("Pluto WebSocket did not send metadata text frame after control frames")
+        return fail("Maia HTTPD IQ WebSocket did not send metadata text frame after control frames")
     }
 
     private fun validateMetadata(text: String): String? {
@@ -253,16 +264,16 @@ class PlutoWebSocketTransport private constructor(
             val channels = json.optString("channels")
             val endianness = json.optString("endianness")
             if (!format.equals("cs8", ignoreCase = true)) {
-                "Pluto WebSocket metadata format is $format; expected cs8"
+                "Maia HTTPD IQ WebSocket metadata format is $format; expected cs8"
             } else if (!channels.equals("iq", ignoreCase = true)) {
-                "Pluto WebSocket metadata channels is $channels; expected iq"
+                "Maia HTTPD IQ WebSocket metadata channels is $channels; expected iq"
             } else if (!endianness.equals("iqiq", ignoreCase = true)) {
-                "Pluto WebSocket metadata endianness is $endianness; expected iqiq"
+                "Maia HTTPD IQ WebSocket metadata endianness is $endianness; expected iqiq"
             } else {
                 null
             }
         } catch (error: Exception) {
-            "Pluto WebSocket metadata is not valid JSON: ${error.message ?: error.javaClass.name}; body=$text"
+            "Maia HTTPD IQ WebSocket metadata is not valid JSON: ${error.message ?: error.javaClass.name}; body=$text"
         }
     }
 
@@ -485,9 +496,9 @@ class PlutoWebSocketTransport private constructor(
         socket = null
     }
 
-    private fun inputOrThrow(): InputStream = input ?: throw IllegalStateException("Pluto WebSocket input is not open")
+    private fun inputOrThrow(): InputStream = input ?: throw IllegalStateException("Maia HTTPD IQ WebSocket input is not open")
 
-    private fun outputOrThrow(): OutputStream = output ?: throw IllegalStateException("Pluto WebSocket output is not open")
+    private fun outputOrThrow(): OutputStream = output ?: throw IllegalStateException("Maia HTTPD IQ WebSocket output is not open")
 
     private fun endpoint(): String {
         return if (port == 80) host else "$host:$port"
@@ -504,9 +515,10 @@ class PlutoWebSocketTransport private constructor(
         if (elapsedSec >= 1.0) {
             val bytesPerSec = bytesReceived / elapsedSec
             val samplesPerSec = samplesReceived / elapsedSec
+            lastEstimatedSampleRateHz = samplesPerSec.toLong()
             Log.i(
                 LOG_TAG,
-                "Pluto WebSocket stream bytes_received=$bytesReceived, samples_received=$samplesReceived, " +
+                "Maia HTTPD IQ WebSocket stream bytes_received=$bytesReceived, samples_received=$samplesReceived, " +
                     "estimated_bytes_per_sec=${bytesPerSec.toLong()}, estimated_sample_rate=${samplesPerSec.toLong()}",
             )
             bytesReceived = 0L
@@ -576,7 +588,7 @@ class PlutoWebSocketTransport private constructor(
             connectTimeoutMs: Int,
             readTimeoutMs: Int,
         ): PlutoWebSocketTransport {
-            Log.i(LOG_TAG, "Created Pluto WebSocket transport network=$network handle=${network.networkHandle} endpoint=ws://$host:$port$path")
+            Log.i(LOG_TAG, "Created Maia HTTPD IQ WebSocket transport network=$network handle=${network.networkHandle} endpoint=ws://$host:$port$path")
             return PlutoWebSocketTransport(network, host, port, path, connectTimeoutMs, readTimeoutMs)
         }
 

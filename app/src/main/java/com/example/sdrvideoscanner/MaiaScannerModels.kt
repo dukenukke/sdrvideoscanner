@@ -1,6 +1,7 @@
 package com.example.sdrvideoscanner
 
 import kotlin.math.abs
+import kotlin.math.ceil
 
 data class MaiaScanConfig(
     val sampleRateHz: Long = 30_720_000L,
@@ -14,6 +15,8 @@ data class MaiaScanConfig(
     val candidateRevisitCount: Int = 3,
     val requiredPositiveRevisits: Int = 2,
     val retuneTimeoutMs: Long = 1_000L,
+    val retuneTimeoutSafetyMarginMs: Long = 75L,
+    val waterfallFrameRateFps: Double = 10.0,
     val defaultRfPathSettlingMs: Long = 3L,
     val minSnrDb: Float = 8.0f,
     val minOccupiedBandwidthHz: Long = 2_000_000L,
@@ -22,6 +25,47 @@ data class MaiaScanConfig(
     val dcExclusionBins: Int = 3,
     val mergeFrequencyToleranceHz: Long = 3_000_000L,
     val fpvMatchToleranceHz: Long = 2_000_000L,
+)
+
+object MaiaScanTiming {
+    const val REQUIRED_VALID_FRAMES_AFTER_RETUNE = 1
+
+    fun minimumRetuneTimeoutMs(config: MaiaScanConfig, actualWaterfallFrameRateFps: Double = config.waterfallFrameRateFps): Long {
+        require(actualWaterfallFrameRateFps.isFinite() && actualWaterfallFrameRateFps > 0.0) {
+            "actualWaterfallFrameRateFps must be positive"
+        }
+        val collectionMs = ceil(
+            (config.discardedFramesAfterRetune + REQUIRED_VALID_FRAMES_AFTER_RETUNE) * 1000.0 /
+                actualWaterfallFrameRateFps,
+        ).toLong()
+        return config.loSettlingMs + config.retuneTimeoutSafetyMarginMs + collectionMs
+    }
+
+    fun validateRetuneTimeout(config: MaiaScanConfig, actualWaterfallFrameRateFps: Double = config.waterfallFrameRateFps) {
+        val minimum = minimumRetuneTimeoutMs(config, actualWaterfallFrameRateFps)
+        require(config.retuneTimeoutMs >= minimum) {
+            "retuneTimeoutMs ${config.retuneTimeoutMs} is below minimum ${minimum} ms for " +
+                "${actualWaterfallFrameRateFps} fps, ${config.discardedFramesAfterRetune} discarded frames, " +
+                "$REQUIRED_VALID_FRAMES_AFTER_RETUNE required frame, ${config.loSettlingMs} ms LO settling, " +
+                "and ${config.retuneTimeoutSafetyMarginMs} ms safety margin"
+        }
+    }
+}
+
+data class MaiaScannerRuntimeStatus(
+    val requestedWaterfallFrameRateFps: Double,
+    val actualWaterfallFrameRateFps: Double?,
+    val spectrometerStatus: String,
+    val websocketStatus: String,
+    val effectiveRetuneTimeoutMs: Long,
+    val staleFramesToDiscard: Int,
+    val latestInitializationError: String? = null,
+)
+
+data class MaiaRadioConfigurationResult(
+    val requestedWaterfallFrameRateFps: Double,
+    val actualWaterfallFrameRateFps: Double?,
+    val spectrometerStatus: String,
 )
 
 data class ScanRange(
@@ -114,8 +158,11 @@ data class SignalClassification(
 
 enum class MaiaScannerState {
     STOPPED,
-    CONNECTING,
-    CONFIGURING,
+    IDLE,
+    CONFIGURING_RADIO,
+    CONFIGURING_SPECTROMETER,
+    CONNECTING_WATERFALL,
+    DISCARDING_STALE_FRAMES,
     FAST_SCAN,
     RETUNING,
     SETTLING,
@@ -123,6 +170,7 @@ enum class MaiaScannerState {
     ANALYZING,
     CANDIDATE_REVISIT,
     PAUSED,
+    RECONFIGURING,
     ERROR,
 }
 
